@@ -311,43 +311,33 @@
 
   function stripBlock(strip, compare) {
     const cells = strip.cells;
-    // Build the colored strip of half-hour cells.
+    const anchor = strip.anchor;
     let bar = `<div class="strip">`;
     for (const c of cells) {
-      let bg, cls = "strip-cell";
-      if (c.lowSample) { bg = "transparent"; cls += " lowsample"; }
-      else bg = rampColor(c.wait > 12 || c.load > 1.8 || c.cancel > 0.3 ? Math.max(c.wait, 5) : c.wait, 5, 20);
-      // Use severity for richer coloring on under cells; over cells stay green.
-      if (!c.lowSample) {
-        if (c.state === "over") bg = "var(--good)";
-        else if (c.state === "ok") bg = "#cfd8d0";
-        else bg = sevToColor(c.severity);
-      }
-      const isPeak = strip.underWindows.some((w) => w.peakHour === c.hour);
-      bar += `<div class="${cls}" style="background:${bg}" title="${escapeHtml(c.hour)} · wait ${c.wait.toFixed(1)} · load ${c.load.toFixed(2)} · cancel ${(c.cancel*100).toFixed(0)}% · n ${c.count}">${isPeak ? '<span class="peak">◆</span>' : ""}</div>`;
+      let bg;
+      if (c.lowSample) { bg = "transparent"; }
+      else if (c.state === "over") bg = "var(--good)";
+      else if (c.state === "ok") bg = "#cfd8d0";
+      else bg = sevToColor(c.severity);
+      const isPeak = anchor && anchor.peakHour === c.hour && anchor.real;
+      bar += `<div class="strip-cell${c.lowSample ? " lowsample" : ""}" style="background:${bg}" title="${escapeHtml(c.hour)} · wait ${c.wait.toFixed(1)} · load ${c.load.toFixed(2)} · cancel ${(c.cancel*100).toFixed(0)}% · n ${c.count}">${isPeak ? '<span class="peak">◆</span>' : ""}</div>`;
     }
     bar += `</div>`;
 
-    // Hour ticks (start, a few midpoints, end)
-    const ticks = `<div class="strip-ticks">${cells.map((c, i) =>
-      (i === 0 || i === cells.length - 1 || c.hour.endsWith(":00") && i % 2 === 0)
-        ? `<span style="flex:1;text-align:${i===0?'left':i===cells.length-1?'right':'center'}">${c.hour}</span>` : `<span style="flex:1"></span>`
-    ).join("")}</div>`;
+    const ticks = `<div class="strip-ticks"><span style="flex:1;text-align:left">${cells.length ? cells[0].hour : ""}</span><span style="flex:1;text-align:right">${cells.length ? cells[cells.length-1].hour : ""}</span></div>`;
 
-    // Recommendations
     let recs = `<div class="strip-recs">`;
-    if (strip.underWindows.length) {
-      for (const w of strip.underWindows) {
-        recs += `<div class="rec rec-under"><b>Under-served ${w.start}–${w.end}</b> · peak ${w.peakHour} — anchor an incentive block over this window${w.maxSeverity > 0.5 ? ", strong tier" : ""}.</div>`;
+    if (anchor) {
+      if (anchor.real) {
+        const tierWord = anchor.strength === "strong" ? ", strong tier" : (anchor.strength === "moderate" ? ", standard tier" : "");
+        recs += `<div class="rec rec-under"><b>Anchor incentive block ${anchor.start}–${anchor.end}</b> · peak ${anchor.peakHour} — put a shift block over this window${tierWord}.</div>`;
+      } else {
+        // calm day: no real breach, show relative-worst stretch but say it's fine
+        recs += `<div class="rec rec-ok">No window breaching targets today. Relative softest stretch is ${anchor.start}–${anchor.end} — no block change needed unless preempting.</div>`;
       }
     }
-    if (strip.overWindows.length) {
-      for (const w of strip.overWindows) {
-        recs += `<div class="rec rec-over"><b>Over-served ${w.start}–${w.end}</b> — lower tier or no incentive; reclaim for the windows above.</div>`;
-      }
-    }
-    if (!strip.underWindows.length && !strip.overWindows.length) {
-      recs += `<div class="rec rec-ok">Steady across the day — no block change indicated.</div>`;
+    if (strip.reclaim) {
+      recs += `<div class="rec rec-over"><b>Over-served ${strip.reclaim.start}–${strip.reclaim.end}</b> — lower tier or no incentive; reclaim for the anchor above.</div>`;
     }
     recs += `</div>`;
 

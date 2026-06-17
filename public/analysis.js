@@ -182,56 +182,97 @@
         breaches: b.breaches, lowSample: b.lowSample,
       }));
 
-      const underWindows = detectWindows(cells, "under");
-      const overWindows = detectWindows(cells, "over");
+      // ONE anchor per area, always. The single best contiguous window to put an
+      // incentive block over — chosen to capture the day's real pressure, not faint
+      // marginal stretches.
+      const anchor = bestAnchor(cells);
+      // One optional reclaim hint: the single clearly over-served block, if any.
+      const reclaim = bestReclaim(cells);
 
-      // Area-level trip total for sorting strips by importance.
       const trips = list.reduce((s, b) => s + b.count, 0);
-      const anyUnder = underWindows.length > 0;
-      strips.push({ area, cells, underWindows, overWindows, trips, anyUnder });
+      strips.push({ area, cells, anchor, reclaim, trips });
     }
-    // Most actionable first: areas with under-served windows, by total severity.
-    strips.sort((a, b) => {
-      const sa = a.underWindows.reduce((s, w) => s + w.totalSeverity, 0);
-      const sb = b.underWindows.reduce((s, w) => s + w.totalSeverity, 0);
-      return sb - sa;
-    });
+    // Most actionable first: by the anchor's intensity (a calm area's anchor is weak).
+    strips.sort((a, b) => (b.anchor ? b.anchor.score : 0) - (a.anchor ? a.anchor.score : 0));
     return strips;
   }
 
-  // Detect contiguous runs of a target state, bridging single-cell gaps so one soft
-  // bucket inside an otherwise-solid block doesn't fragment it. Returns windows with
-  // start/end hour, the peak cell, and aggregate severity.
-  function detectWindows(cells, wantState) {
-    const isWant = (c) => c.state === wantState;
-    const windows = [];
-    let i = 0;
-    while (i < cells.length) {
-      if (!isWant(cells[i])) { i++; continue; }
-      let j = i;
-      // extend, allowing a single-cell gap if the cell after the gap is the wanted state
-      while (j + 1 < cells.length) {
-        if (isWant(cells[j + 1])) { j++; continue; }
-        if (j + 2 < cells.length && isWant(cells[j + 2]) && wantState === "under") { j += 2; continue; }
-        break;
+  // Find the single best window to anchor an incentive block over.
+  // Approach: a window is a contiguous span. We score candidate spans by the SUM of
+  // positive over-target severity inside them (so a span is only as good as the real
+  // pressure it contains), then pick the highest-scoring span, trimming faint edges so
+  // the window hugs the actual hot stretch rather than bleeding into pale cells.
+  // Always returns one anchor (even on a calm day -> the relative-worst stretch),
+  // flagged weak/strong so the UI can tone it down when it's mild.
+  function bestAnchor(cells) {
+    const n = cells.length;
+    if (!n) return null;
+    // sev of a cell only counts if it's actually over target (breaching). Otherwise 0.
+    const cellSev = cells.map((c) => (c.lowSample ? 0 : (c.breaches.length > 0 ? c.severity : 0)));
+
+    // If literally nothing breaches, fall back to the single most-pressured cell's
+    // neighborhood so we still always emit one anchor (the relative worst).
+    const anyBreach = cellSev.some((v) => v > 0);
+    const scoreArr = anyBreach ? cellSev : cells.map((c) => (c.lowSample ? 0 : c.severity + 0.001));
+
+    // Best contiguous span maximizing summed score, with a mild length preference so we
+    // don't return a 1-cell spike when a coherent block exists. We cap span length so an
+    // "always slightly bad" area doesn't return the whole day.
+    const MAX_SPAN = 8;   // up to 4 hours
+    const MIN_SPAN = 2;   // at least 1 hour
+    let best = null;
+    for (let i = 0; i < n; i++) {
+      let sum = 0;
+      for (let len = 1; len <= MAX_SPAN && i + len <= n; len++) {
+        sum += scoreArr[i + len - 1];
+        if (len < MIN_SPAN) continue;
+        // average density rewards tight hot blocks; small length bonus avoids 1-cell wins
+        const density = sum / len;
+        const score = sum * 0.7 + density * len * 0.3;
+        if (!best || score > best.score) best = { start: i, end: i + len - 1, sum, score };
       }
-      const run = cells.slice(i, j + 1);
-      // require a real block: at least 2 cells (1 hour) for under; 2 for over too
-      if (run.length >= 2) {
-        const peak = run.reduce((m, c) => (c.severity > m.severity ? c : m), run[0]);
-        windows.push({
-          start: run[0].hour,
-          end: addHalfHour(run[run.length - 1].hour),
-          peakHour: peak.hour,
-          length: run.length,
-          totalSeverity: run.reduce((s, c) => s + c.severity, 0),
-          maxSeverity: peak.severity,
-          cells: run,
-        });
+    }
+    if (!best) best = { start: 0, end: Math.min(MIN_SPAN, n) - 1, sum: 0, score: 0 };
+
+    // Trim faint edge cells: shrink the window inward while the edge cell carries
+    // little of the window's pressure (so the window hugs the real hot stretch).
+    const edgeFaint = (idx) => scoreArr[idx] < (best.sum / (best.end - best.start + 1)) * 0.4;
+    while (best.end > best.start && edgeFaint(best.end)) best.end--;
+    while (best.start < best.end && edgeFaint(best.start)) best.start++;
+
+    const run = cells.slice(best.start, best.end + 1);
+    const peak = run.reduce((m, c) => (c.severity > m.severity ? c : m), run[0]);
+    const maxSev = peak.severity;
+    const breachCount = run.filter((c) => c.breaches.length > 0).length;
+    return {
+      start: run[0].hour,
+      end: addHalfHour(run[run.length - 1].hour),
+      peakHour: peak.hour,
+      maxSeverity: maxSev,
+      breachCount,
+      score: best.score,
+      // tier hint: strong if the peak is genuinely severe, weak/minor if the whole
+      // window is mild (the "calm day, here's the relative worst" case).
+      strength: maxSev > 0.5 ? "strong" : (maxSev > 0.18 ? "moderate" : "minor"),
+      real: anyBreach && breachCount >= 1,
+    };
+  }
+
+  // The single clearly over-served block (for the reclaim hint), or null. Requires a
+  // real run of comfortably-under cells so we don't suggest reclaiming from noise.
+  function bestReclaim(cells) {
+    let best = null, i = 0;
+    while (i < cells.length) {
+      if (cells[i].state !== "over") { i++; continue; }
+      let j = i;
+      while (j + 1 < cells.length && cells[j + 1].state === "over") j++;
+      const len = j - i + 1;
+      if (len >= 3 && (!best || len > best.len)) {
+        best = { start: cells[i].hour, end: addHalfHour(cells[j].hour), len };
       }
       i = j + 1;
     }
-    return windows;
+    return best;
   }
 
   // "18:00" -> "18:30", "18:30" -> "19:00" — for expressing a window's exclusive end.
