@@ -1,6 +1,0 @@
-{
-  "name": "muvmi-area-analyzer",
-  "version": "1.0.0",
-  "description": "Daily area performance analysis tool for MuvMi, backed by Metabase card 7441",
-  "private": true
-}
