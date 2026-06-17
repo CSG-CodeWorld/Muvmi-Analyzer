@@ -71,10 +71,10 @@
   input[type=date] { color-scheme: dark; }
   /* Brighten + enlarge the calendar icon so it's clearly tappable. */
   input[type=date]::-webkit-calendar-picker-indicator {
-    filter: invert(0.85); cursor: pointer; opacity: 1; transform: scale(1.15);
+    filter: invert(1) brightness(2); cursor: pointer; opacity: 1; transform: scale(1.2);
     margin-left: 4px;
   }
-  input[type=date]:hover::-webkit-calendar-picker-indicator { filter: invert(1); }
+  input[type=date]:hover::-webkit-calendar-picker-indicator { filter: invert(1) brightness(2); opacity: .75; }
   .err { color: var(--bad); font-size: 12.5px; margin-top: 12px; min-height: 1em; }
 
   /* ---- Controls row ---- */

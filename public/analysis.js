@@ -91,9 +91,11 @@
     }));
 
     // ADD list: breaches at least one target, has adequate volume, sorted by severity.
+    // NOTE: we set structuralFlag on the SAME object (not a copy) so that comparison
+    // data attached later (to analysis.buckets) is visible on these rows too.
     const addList = scored
       .filter((b) => b.breaches.length > 0 && !b.lowSample)
-      .map((b) => ({ ...b, structuralFlag: waitNotLoadDriven(b) }))
+      .map((b) => { b.structuralFlag = waitNotLoadDriven(b); return b; })
       .sort((a, b) => b.severity - a.severity);
 
     // PULL list: over-served, sorted by how over-served (lowest load first).
