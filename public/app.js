@@ -88,7 +88,27 @@
     const date = $("date").value;
     if (!date) return;
     const compare = $("cmp").checked;
-    const weeks = parseInt($("weeks").value, 10);
+
+    // Weeks back: free number, clamped to a sane range. Each extra week is one more
+    // ~15-20s sequential pull, so warn before a long run.
+    const WARN_WEEKS = 6;            // above this, confirm before running
+    const MAX_WEEKS = 52;            // hard ceiling
+    let weeks = parseInt($("weeks").value, 10);
+    if (!Number.isFinite(weeks) || weeks < 1) weeks = 1;
+    if (weeks > MAX_WEEKS) weeks = MAX_WEEKS;
+    $("weeks").value = weeks;        // reflect the clamp back to the user
+
+    if (compare && weeks > WARN_WEEKS) {
+      const totalPulls = weeks + 1;  // today + N prior weeks
+      const lowMin = Math.ceil((totalPulls * 15) / 60);
+      const highMin = Math.ceil((totalPulls * 20) / 60);
+      const ok = window.confirm(
+        `That's ${totalPulls} separate queries (today + ${weeks} prior weeks).\n\n` +
+        `Each one takes ~15-20 seconds on Metabase, so this run will take roughly ` +
+        `${lowMin}-${highMin} minute${highMin > 1 ? "s" : ""}.\n\nRun it anyway?`
+      );
+      if (!ok) return;
+    }
 
     const dates = [date];
     if (compare) dates.push(...priorWeekdayDates(date, weeks));

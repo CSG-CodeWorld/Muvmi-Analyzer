@@ -66,6 +66,15 @@
     border: 1px solid var(--line); background: var(--bg); color: var(--ink);
   }
   input:focus { outline: 2px solid var(--accent); outline-offset: 0; border-color: transparent; }
+  /* Tell the browser this is a dark UI, so native controls (incl. the date
+     picker's calendar icon) render light instead of dark-on-dark. */
+  input[type=date] { color-scheme: dark; }
+  /* Brighten + enlarge the calendar icon so it's clearly tappable. */
+  input[type=date]::-webkit-calendar-picker-indicator {
+    filter: invert(0.85); cursor: pointer; opacity: 1; transform: scale(1.15);
+    margin-left: 4px;
+  }
+  input[type=date]:hover::-webkit-calendar-picker-indicator { filter: invert(1); }
   .err { color: var(--bad); font-size: 12.5px; margin-top: 12px; min-height: 1em; }
 
   /* ---- Controls row ---- */
@@ -179,9 +188,7 @@
       <label class="check"><input type="checkbox" id="cmp" checked /> Compare to median of prior weeks (same weekday)</label>
       <div class="field">
         <label for="weeks">Weeks back</label>
-        <select id="weeks" class="btn" style="padding:8px 10px">
-          <option value="3">3</option><option value="4" selected>4</option>
-        </select>
+        <input id="weeks" type="number" min="1" max="52" step="1" value="4" style="width:72px" />
       </div>
       <button class="btn primary" id="runBtn">Run analysis</button>
     </div>
