@@ -206,7 +206,18 @@
       </div>
     </section>`;
 
-    // WEEK-OVER-WEEK TRANSITIONS (only when comparison is on)
+    // ---- DAY STRIPS (the hero) ----
+    html += `<section>
+      <div class="eyebrow">Incentive windows · ${escapeHtml(opts.date)}</div>
+      <h2 class="section-title">Where to anchor incentive blocks</h2>
+      <div class="section-note">Each area's day at a glance — color is severity (green = healthy, red = under-served). Incentives are shift blocks, so the call-outs are contiguous windows, not single slots. Peak marks where pressure is highest.</div>
+      ${stripLegend()}`;
+    for (const strip of a.strips) html += stripBlock(strip, opts.compare);
+    html += `</section>`;
+
+    // ---- DETAILS (collapsed) ----
+    html += `<section><details><summary class="details-toggle">Detail — ranked buckets, week-over-week changes, area rollup, raw grid</summary><div style="margin-top:16px">`;
+
     if (opts.compare && a.transitions) {
       const t = a.transitions;
       const wd = weekdayName(opts.date);
@@ -281,7 +292,83 @@
       </details>
     </section>`;
 
+    // close the DETAILS wrapper opened after the strips
+    html += `</div></details></section>`;
+
     $("report").innerHTML = html;
+  }
+
+  // ---- Day strip rendering ----
+  function stripLegend() {
+    return `<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:14px;font-size:11.5px;color:var(--ink-dim);font-family:var(--mono)">
+      <span><span class="legend-sw" style="background:var(--good)"></span> healthy</span>
+      <span><span class="legend-sw" style="background:#f5f5f5"></span> at target</span>
+      <span><span class="legend-sw" style="background:var(--bad)"></span> under-served</span>
+      <span><span class="legend-sw" style="border:1px solid var(--line);background:transparent"></span> low sample</span>
+      <span>◆ peak</span>
+    </div>`;
+  }
+
+  function stripBlock(strip, compare) {
+    const cells = strip.cells;
+    // Build the colored strip of half-hour cells.
+    let bar = `<div class="strip">`;
+    for (const c of cells) {
+      let bg, cls = "strip-cell";
+      if (c.lowSample) { bg = "transparent"; cls += " lowsample"; }
+      else bg = rampColor(c.wait > 12 || c.load > 1.8 || c.cancel > 0.3 ? Math.max(c.wait, 5) : c.wait, 5, 20);
+      // Use severity for richer coloring on under cells; over cells stay green.
+      if (!c.lowSample) {
+        if (c.state === "over") bg = "var(--good)";
+        else if (c.state === "ok") bg = "#cfd8d0";
+        else bg = sevToColor(c.severity);
+      }
+      const isPeak = strip.underWindows.some((w) => w.peakHour === c.hour);
+      bar += `<div class="${cls}" style="background:${bg}" title="${escapeHtml(c.hour)} · wait ${c.wait.toFixed(1)} · load ${c.load.toFixed(2)} · cancel ${(c.cancel*100).toFixed(0)}% · n ${c.count}">${isPeak ? '<span class="peak">◆</span>' : ""}</div>`;
+    }
+    bar += `</div>`;
+
+    // Hour ticks (start, a few midpoints, end)
+    const ticks = `<div class="strip-ticks">${cells.map((c, i) =>
+      (i === 0 || i === cells.length - 1 || c.hour.endsWith(":00") && i % 2 === 0)
+        ? `<span style="flex:1;text-align:${i===0?'left':i===cells.length-1?'right':'center'}">${c.hour}</span>` : `<span style="flex:1"></span>`
+    ).join("")}</div>`;
+
+    // Recommendations
+    let recs = `<div class="strip-recs">`;
+    if (strip.underWindows.length) {
+      for (const w of strip.underWindows) {
+        recs += `<div class="rec rec-under"><b>Under-served ${w.start}–${w.end}</b> · peak ${w.peakHour} — anchor an incentive block over this window${w.maxSeverity > 0.5 ? ", strong tier" : ""}.</div>`;
+      }
+    }
+    if (strip.overWindows.length) {
+      for (const w of strip.overWindows) {
+        recs += `<div class="rec rec-over"><b>Over-served ${w.start}–${w.end}</b> — lower tier or no incentive; reclaim for the windows above.</div>`;
+      }
+    }
+    if (!strip.underWindows.length && !strip.overWindows.length) {
+      recs += `<div class="rec rec-ok">Steady across the day — no block change indicated.</div>`;
+    }
+    recs += `</div>`;
+
+    const lowVol = strip.trips < 150;
+    return `<div class="strip-area">
+      <div class="strip-head">
+        <span class="strip-name">${escapeHtml(strip.area)}</span>
+        <span class="strip-meta">${fmt.int(strip.trips)} trips${lowVol ? " · low volume" : ""}</span>
+      </div>
+      ${bar}
+      ${ticks}
+      ${recs}
+    </div>`;
+  }
+
+  // Severity (0..~1) -> color from at-target white to deep red.
+  function sevToColor(sev) {
+    const t = Math.max(0, Math.min(1, sev / 0.8));
+    const w = [245, 245, 245], r = [194, 53, 47];
+    const c = w.map((x, i) => Math.round(x + (r[i] - x) * t));
+    return `rgb(${c[0]},${c[1]},${c[2]})`;
   }
 
   // A labeled sub-block of the transitions section.

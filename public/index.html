@@ -140,8 +140,26 @@
   .delta.down { color: var(--good); }
 
   .empty { color: var(--ink-faint); font-size: 13px; font-style: italic; padding: 8px 0; }
-
-  /* full grid */
+  /* ---- Day strips (hero) ---- */
+  .legend-sw { display:inline-block; width:11px; height:11px; border-radius:2px; vertical-align:middle; margin-right:3px; }
+  .strip-area { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; margin-bottom: 12px; }
+  .strip-head { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:9px; }
+  .strip-name { font-weight:600; font-size:14.5px; }
+  .strip-meta { color: var(--ink-faint); font-size:12px; font-family: var(--mono); }
+  .strip { display:flex; gap:2px; height:30px; }
+  .strip-cell { flex:1; border-radius:2px; position:relative; min-width:0; }
+  .strip-cell.lowsample { border:1px dashed var(--line); }
+  .strip-cell .peak { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); color:#1a0d0d; font-size:11px; line-height:1; }
+  .strip-ticks { display:flex; margin-top:4px; font-family:var(--mono); font-size:10px; color:var(--ink-faint); }
+  .strip-recs { margin-top:11px; display:flex; flex-direction:column; gap:6px; }
+  .rec { font-size:13px; padding:7px 11px; border-radius:6px; border-left:3px solid var(--line); background:var(--panel-2); }
+  .rec b { font-weight:600; }
+  .rec-under { border-left-color: var(--bad); }
+  .rec-under b { color: #ff9d99; }
+  .rec-over { border-left-color: var(--good); }
+  .rec-over b { color: var(--good); }
+  .rec-ok { color: var(--ink-dim); border-left-color: var(--line); }
+  .details-toggle { font-size:14px; color: var(--ink); padding:10px 0; font-weight:500; cursor:pointer; }
   .gridwrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); }
   table { border-collapse: collapse; font-size: 12.5px; width: 100%; }
   th, td { padding: 5px 9px; text-align: right; white-space: nowrap; font-family: var(--mono); }

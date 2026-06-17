@@ -130,12 +130,21 @@
       totalBuckets: a.totalBuckets,
     })).sort((x, y) => y.avgWait - x.avgWait);
 
+    // ---- Per-area day strips + recommended incentive windows ----
+    // Incentives are assigned as contiguous SHIFT BLOCKS (see driver UI), and demand
+    // is a gradient, so the useful unit is a window, not a scattered 30-min cell.
+    // For each area we lay out the day in order, score each cell, and detect runs of
+    // under-served / over-served cells (bridging a single soft cell so a one-bucket dip
+    // doesn't split a real block), then mark where each window peaks.
+    const strips = buildStrips(scored);
+
     return {
       buckets: scored,
       addList,
       pullList,
       watchList,
       areaRollup,
+      strips,
       targets: TARGETS,
       volumeFloor: VOLUME_FLOOR,
       summary: {
@@ -148,6 +157,89 @@
         criticalCount: addList.filter((b) => b.severity > 0.5).length,
       },
     };
+  }
+
+  // Classify a single bucket's staffing state for strip purposes.
+  // Returns 'under' (breaching -> needs drivers), 'over' (clearly over-served),
+  // or 'ok'. Low-sample cells are 'ok' (not actionable) but kept visible as faint.
+  function stripState(b) {
+    if (b.lowSample) return "lowsample";
+    if (b.breaches.length > 0) return "under";
+    if (b.load < TARGETS.load * 0.7 && b.wait < TARGETS.wait * 0.85 && b.cancel < TARGETS.cancel * 0.7) return "over";
+    return "ok";
+  }
+
+  function buildStrips(scored) {
+    const byArea = {};
+    for (const b of scored) (byArea[b.area] = byArea[b.area] || []).push(b);
+
+    const strips = [];
+    for (const [area, list] of Object.entries(byArea)) {
+      list.sort((a, b) => (a.hour < b.hour ? -1 : 1));
+      const cells = list.map((b) => ({
+        hour: b.hour, severity: b.severity, state: stripState(b),
+        wait: b.wait, load: b.load, cancel: b.cancel, count: b.count,
+        breaches: b.breaches, lowSample: b.lowSample,
+      }));
+
+      const underWindows = detectWindows(cells, "under");
+      const overWindows = detectWindows(cells, "over");
+
+      // Area-level trip total for sorting strips by importance.
+      const trips = list.reduce((s, b) => s + b.count, 0);
+      const anyUnder = underWindows.length > 0;
+      strips.push({ area, cells, underWindows, overWindows, trips, anyUnder });
+    }
+    // Most actionable first: areas with under-served windows, by total severity.
+    strips.sort((a, b) => {
+      const sa = a.underWindows.reduce((s, w) => s + w.totalSeverity, 0);
+      const sb = b.underWindows.reduce((s, w) => s + w.totalSeverity, 0);
+      return sb - sa;
+    });
+    return strips;
+  }
+
+  // Detect contiguous runs of a target state, bridging single-cell gaps so one soft
+  // bucket inside an otherwise-solid block doesn't fragment it. Returns windows with
+  // start/end hour, the peak cell, and aggregate severity.
+  function detectWindows(cells, wantState) {
+    const isWant = (c) => c.state === wantState;
+    const windows = [];
+    let i = 0;
+    while (i < cells.length) {
+      if (!isWant(cells[i])) { i++; continue; }
+      let j = i;
+      // extend, allowing a single-cell gap if the cell after the gap is the wanted state
+      while (j + 1 < cells.length) {
+        if (isWant(cells[j + 1])) { j++; continue; }
+        if (j + 2 < cells.length && isWant(cells[j + 2]) && wantState === "under") { j += 2; continue; }
+        break;
+      }
+      const run = cells.slice(i, j + 1);
+      // require a real block: at least 2 cells (1 hour) for under; 2 for over too
+      if (run.length >= 2) {
+        const peak = run.reduce((m, c) => (c.severity > m.severity ? c : m), run[0]);
+        windows.push({
+          start: run[0].hour,
+          end: addHalfHour(run[run.length - 1].hour),
+          peakHour: peak.hour,
+          length: run.length,
+          totalSeverity: run.reduce((s, c) => s + c.severity, 0),
+          maxSeverity: peak.severity,
+          cells: run,
+        });
+      }
+      i = j + 1;
+    }
+    return windows;
+  }
+
+  // "18:00" -> "18:30", "18:30" -> "19:00" — for expressing a window's exclusive end.
+  function addHalfHour(hhmm) {
+    const [h, m] = hhmm.split(":").map(Number);
+    let nh = h, nm = m + 30;
+    if (nm >= 60) { nm -= 60; nh += 1; }
+    return String(nh).padStart(2, "0") + ":" + String(nm).padStart(2, "0");
   }
 
   // Comparison: given today's buckets and an array of prior-week pulls (same weekday),
