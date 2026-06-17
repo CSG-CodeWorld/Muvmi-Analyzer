@@ -206,6 +206,23 @@
       </div>
     </section>`;
 
+    // WEEK-OVER-WEEK TRANSITIONS (only when comparison is on)
+    if (opts.compare && a.transitions) {
+      const t = a.transitions;
+      const wd = weekdayName(opts.date);
+      html += `<section>
+        <div class="eyebrow">Versus recent ${wd}s</div>
+        <h2 class="section-title">What changed week over week</h2>
+        <div class="section-note">Each bucket compared to the median of the prior ${opts.weeks} ${wd}s. "Problem" = breaching any target. This answers what's new, what's chronic, and what's recovered — so you're not eyeballing deltas.</div>`;
+
+      html += transitionGroup("New problems", "Fine on recent " + wd + "s, breaching today — worth chasing now.", t.newlyBroken, "add");
+      html += transitionGroup("Getting worse", "Already a problem, and worse today than its recent median — escalating.", t.worsening, "add");
+      html += transitionGroup("Still a problem, but improving", "Breaching both then and now, but better today than its median — moving the right way.", t.improving, "watch");
+      html += transitionGroup("Chronic (holding flat)", "Breaching then and now, roughly unchanged — incentives haven't shifted these; may need a standing change.", t.flat, "watch");
+      html += transitionGroup("Recovered", "Was breaching on recent " + wd + "s, fine today — attention here is paying off.", t.fixed, "pull");
+      html += `</section>`;
+    }
+
     // ADD LIST
     html += `<section>
       <div class="eyebrow">Priority</div>
@@ -265,6 +282,21 @@
     </section>`;
 
     $("report").innerHTML = html;
+  }
+
+  // A labeled sub-block of the transitions section.
+  function transitionGroup(title, note, list, kind) {
+    const n = list.length;
+    let h = `<div style="margin:16px 0 6px;display:flex;align-items:baseline;gap:10px">
+      <h3 style="font-size:14px">${escapeHtml(title)}</h3>
+      <span class="hour" style="font-family:var(--mono)">${n}</span>
+    </div>
+    <div class="section-note" style="margin-bottom:8px">${escapeHtml(note)}</div>`;
+    if (!n) { h += `<div class="empty">None.</div>`; return h; }
+    const maxSev = list[0] && list[0].severity ? list[0].severity : 1;
+    for (const b of list.slice(0, 20)) h += actionRow(b, kind, maxSev, true);
+    if (n > 20) h += `<div class="empty">…and ${n - 20} more.</div>`;
+    return h;
   }
 
   function actionRow(b, kind, maxSev, compare) {

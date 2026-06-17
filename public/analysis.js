@@ -171,18 +171,64 @@
         e.wait.push(b.wait); e.load.push(b.load); e.cancel.push(b.cancel);
       }
     }
+
+    const T = TARGETS;
+    // A "problem" = breaching ANY target. We evaluate it for today and for the prior median.
+    const breachesVals = (wait, load, cancel) => {
+      const list = [];
+      if (wait > T.wait) list.push("wait");
+      if (cancel > T.cancel) list.push("cancel");
+      if (load > T.load) list.push("load");
+      return list;
+    };
+
     for (const b of todayAnalysis.buckets) {
       const k = b.area + "|" + b.hour;
       const e = priorBucketsByKey[k];
       if (!e) { b.comparison = null; continue; }
+      const medWait = median(e.wait), medLoad = median(e.load), medCancel = median(e.cancel);
       b.comparison = {
         weeks: e.wait.length,
-        medWait: median(e.wait), medLoad: median(e.load), medCancel: median(e.cancel),
-        dWait: b.wait - (median(e.wait) ?? b.wait),
-        dLoad: b.load - (median(e.load) ?? b.load),
-        dCancel: b.cancel - (median(e.cancel) ?? b.cancel),
+        medWait, medLoad, medCancel,
+        dWait: b.wait - (medWait ?? b.wait),
+        dLoad: b.load - (medLoad ?? b.load),
+        dCancel: b.cancel - (medCancel ?? b.cancel),
       };
+
+      // Transition state — only meaningful for buckets with adequate volume today.
+      const wasProblem = breachesVals(medWait, medLoad, medCancel).length > 0;
+      const isProblem = b.breaches.length > 0;
+      let state = "stable";        // fine then, fine now
+      if (!wasProblem && isProblem) state = "new";        // newly broken
+      else if (wasProblem && !isProblem) state = "fixed"; // recovered
+      else if (wasProblem && isProblem) {
+        // Persisting — getting worse or better? Use the weighted severity of today vs the
+        // prior median, on the SAME severity scale used elsewhere, so "worse" is consistent.
+        const sevToday = severity(b);
+        const sevThen = severity({ wait: medWait, load: medLoad, cancel: medCancel });
+        state = sevToday > sevThen + 0.02 ? "worse" : (sevToday < sevThen - 0.02 ? "better" : "persisting_flat");
+      }
+      b.transition = b.lowSample ? "lowsample" : state;
+      b.wasProblem = wasProblem;
     }
+
+    // Build grouped transition lists for the report. Sorted so the most actionable lead.
+    const withCmp = todayAnalysis.buckets.filter((b) => b.comparison && !b.lowSample);
+    const sevNow = (b) => severity(b);
+    todayAnalysis.transitions = {
+      newlyBroken: withCmp.filter((b) => b.transition === "new").sort((a, b) => sevNow(b) - sevNow(a)),
+      worsening:   withCmp.filter((b) => b.transition === "worse").sort((a, b) => sevNow(b) - sevNow(a)),
+      improving:   withCmp.filter((b) => b.transition === "better").sort((a, b) => sevNow(b) - sevNow(a)),
+      flat:        withCmp.filter((b) => b.transition === "persisting_flat").sort((a, b) => sevNow(b) - sevNow(a)),
+      fixed:       withCmp.filter((b) => b.transition === "fixed").sort((a, b) => (b.comparison.medWait) - (a.comparison.medWait)),
+    };
+    todayAnalysis.transitionSummary = {
+      newlyBroken: todayAnalysis.transitions.newlyBroken.length,
+      worsening: todayAnalysis.transitions.worsening.length,
+      improving: todayAnalysis.transitions.improving.length,
+      flat: todayAnalysis.transitions.flat.length,
+      fixed: todayAnalysis.transitions.fixed.length,
+    };
     return todayAnalysis;
   }
 
