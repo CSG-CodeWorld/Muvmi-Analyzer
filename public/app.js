@@ -246,12 +246,7 @@
     });
     track += `</div>`;
 
-    const arrows = `<div class="deck-arrows">
-      <button class="deck-arrow" id="deckPrev" aria-label="Previous">‹</button>
-      <button class="deck-arrow" id="deckNext" aria-label="Next">›</button>
-    </div>`;
-
-    $("report").innerHTML = `<div class="deck">${nav}${arrows}${track}</div>`;
+    $("report").innerHTML = `<div class="deck">${nav}${track}</div>`;
     wireDeck(slides.length);
   }
 
@@ -301,6 +296,13 @@
     let h = `<div class="slide-inner">
       <div class="eyebrow">${escapeHtml(opts.date)} · ${wd}${opts.compare ? ` · vs median of ${opts.weeks} prior ${wd}s` : ""}</div>
       <h2 class="slide-title">Daily overview</h2>
+      <div class="benchmarks">
+        <span class="bm-label">Benchmarks</span>
+        <span class="bm"><b>Load</b> ≤ ${a.targets.load}</span>
+        <span class="bm"><b>%Cancel</b> ≤ ${Math.round(a.targets.cancel * 100)}%</span>
+        <span class="bm"><b>Wait</b> ≤ ${a.targets.wait} min</span>
+        <span class="bm-note">a slot is “understaffed” if it breaches any of these</span>
+      </div>
       <div class="tiles">
         <div class="tile"><div class="n">${fmt.int(s.totalTrips)}</div><div class="l">trips today</div></div>
         <div class="tile"><div class="n">${s.areas}</div><div class="l">areas</div></div>
