@@ -332,41 +332,87 @@
         dCancel: b.cancel - (medCancel ?? b.cancel),
       };
 
-      // Transition state — only meaningful for buckets with adequate volume today.
       const wasProblem = breachesVals(medWait, medLoad, medCancel).length > 0;
       const isProblem = b.breaches.length > 0;
-      let state = "stable";        // fine then, fine now
-      if (!wasProblem && isProblem) state = "new";        // newly broken
-      else if (wasProblem && !isProblem) state = "fixed"; // recovered
+      let state = "stable";
+      if (!wasProblem && isProblem) state = "new";
+      else if (wasProblem && !isProblem) state = "fixed";
       else if (wasProblem && isProblem) {
-        // Persisting — getting worse or better? Use the weighted severity of today vs the
-        // prior median, on the SAME severity scale used elsewhere, so "worse" is consistent.
         const sevToday = severity(b);
         const sevThen = severity({ wait: medWait, load: medLoad, cancel: medCancel });
         state = sevToday > sevThen + 0.02 ? "worse" : (sevToday < sevThen - 0.02 ? "better" : "persisting_flat");
       }
       b.transition = b.lowSample ? "lowsample" : state;
       b.wasProblem = wasProblem;
+
+      // Slack score for relative-overstaffed ranking: how far UNDER the targets a slot
+      // sits, only counted for slots comfortably under all targets with real volume.
+      // Higher = more slack = better reclaim candidate.
+      b.slack = computeSlack(b);
+      b.wasSlack = computeSlack({ wait: medWait, load: medLoad, cancel: medCancel, count: b.count, breaches: [] }) > 0;
     }
 
-    // Build grouped transition lists for the report. Sorted so the most actionable lead.
     const withCmp = todayAnalysis.buckets.filter((b) => b.comparison && !b.lowSample);
     const sevNow = (b) => severity(b);
+
+    // ---- Overstaffed (surplus) — RELATIVE top-slice, not absolute. ----
+    // Among all slots that are genuinely slack (comfortably under every target, real
+    // volume), rank by slack and surface only the most slack. Being barely-green does
+    // NOT qualify; being among the MOST green does. On a uniformly busy day this list
+    // is legitimately short or empty.
+    const slackPool = withCmp.filter((b) => b.slack > 0).sort((a, b) => b.slack - a.slack);
+    // top slice: top ~25% of the slack pool, capped, and only those clearly above the
+    // pool's median slack (so we don't drag in marginal ones when little is slack).
+    let surplus = [];
+    if (slackPool.length) {
+      const slackVals = slackPool.map((b) => b.slack);
+      const medSlack = median(slackVals);
+      const cutoff = Math.max(medSlack * 1.15, slackVals[0] * 0.5);
+      const topCount = Math.max(1, Math.min(Math.ceil(slackPool.length * 0.25), 30));
+      surplus = slackPool.filter((b) => b.slack >= cutoff).slice(0, topCount);
+    }
+    const surplusSet = new Set(surplus);
+    // Split surplus by whether it's MORE slack than its own prior-weeks median.
+    const newlyOver = surplus.filter((b) => !b.wasSlack);
+    const moreOver = surplus.filter((b) => b.wasSlack && b.slack - (computeSlack({ wait: b.comparison.medWait, load: b.comparison.medLoad, cancel: b.comparison.medCancel, count: b.count, breaches: [] })) > 0.05);
+    const steadyOver = surplus.filter((b) => !newlyOver.includes(b) && !moreOver.includes(b));
+
     todayAnalysis.transitions = {
-      newlyBroken: withCmp.filter((b) => b.transition === "new").sort((a, b) => sevNow(b) - sevNow(a)),
+      newlyUnderstaffed: withCmp.filter((b) => b.transition === "new").sort((a, b) => sevNow(b) - sevNow(a)),
       worsening:   withCmp.filter((b) => b.transition === "worse").sort((a, b) => sevNow(b) - sevNow(a)),
       improving:   withCmp.filter((b) => b.transition === "better").sort((a, b) => sevNow(b) - sevNow(a)),
-      flat:        withCmp.filter((b) => b.transition === "persisting_flat").sort((a, b) => sevNow(b) - sevNow(a)),
-      fixed:       withCmp.filter((b) => b.transition === "fixed").sort((a, b) => (b.comparison.medWait) - (a.comparison.medWait)),
+      persistent:  withCmp.filter((b) => b.transition === "persisting_flat").sort((a, b) => sevNow(b) - sevNow(a)),
+      recovered:   withCmp.filter((b) => b.transition === "fixed").sort((a, b) => (b.comparison.medWait) - (a.comparison.medWait)),
+      // surplus categories (relative top-slice)
+      newlyOverstaffed: newlyOver,
+      moreOverstaffed: moreOver,
+      surplus, // combined, for the per-area scoreboard
     };
     todayAnalysis.transitionSummary = {
-      newlyBroken: todayAnalysis.transitions.newlyBroken.length,
+      newlyUnderstaffed: todayAnalysis.transitions.newlyUnderstaffed.length,
       worsening: todayAnalysis.transitions.worsening.length,
       improving: todayAnalysis.transitions.improving.length,
-      flat: todayAnalysis.transitions.flat.length,
-      fixed: todayAnalysis.transitions.fixed.length,
+      persistent: todayAnalysis.transitions.persistent.length,
+      recovered: todayAnalysis.transitions.recovered.length,
+      surplus: surplus.length,
     };
+    // tag surplus buckets so per-area views can find them
+    for (const b of todayAnalysis.buckets) b.isSurplus = surplusSet.has(b);
     return todayAnalysis;
+  }
+
+  // How far under the targets a slot sits, as a positive "slack" magnitude, or 0 if it
+  // isn't comfortably under all of them or lacks volume. Mirrors severity but inverted.
+  function computeSlack(b) {
+    if (b.count !== undefined && b.count < VOLUME_FLOOR) return 0;
+    if (b.breaches && b.breaches.length > 0) return 0;
+    // must be comfortably under ALL targets to count as slack at all
+    if (!(b.load < TARGETS.load * 0.85 && b.wait < TARGETS.wait * 0.9 && b.cancel < TARGETS.cancel * 0.85)) return 0;
+    const loadUnder = (TARGETS.load - b.load) / TARGETS.load;
+    const waitUnder = (TARGETS.wait - b.wait) / TARGETS.wait;
+    const cancelUnder = (TARGETS.cancel - b.cancel) / TARGETS.cancel;
+    // weight load most for surplus — it's the most direct "idle drivers" signal
+    return 0.5 * loadUnder + 0.3 * waitUnder + 0.2 * cancelUnder;
   }
 
   const api = { analyzeDay, attachComparison, toBuckets, TARGETS, VOLUME_FLOOR, COL };

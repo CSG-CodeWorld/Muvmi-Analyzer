@@ -55,16 +55,28 @@
   function doLogout() { clearSession(); showLogin(); }
 
   // ---- pulling ----
-  // Pull one date. Returns {cols, rows} or throws.
+  // Pull one date. Returns {cols, rows} or throws a readable error.
   async function pullDate(date) {
     const r = await fetch("/api/pull", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token: getToken(), date }),
     });
-    const j = await r.json();
+    // The function may return a non-JSON error page (e.g. on a server timeout). Read as
+    // text first and parse defensively, so we never throw a cryptic "Unexpected token".
+    const text = await r.text();
+    let j;
+    try { j = JSON.parse(text); }
+    catch {
+      if (r.status === 504 || /timeout/i.test(text)) throw new Error("The query timed out on the server. Try again, or use fewer comparison weeks.");
+      throw new Error(`The server returned an unexpected response (status ${r.status}). Try again in a moment.`);
+    }
     if (j.error) {
       if (/log in again|Session expired|Not logged in/i.test(j.error)) { clearSession(); showLogin(); }
       throw new Error(j.error);
+    }
+    // Empty result = no data for that date yet (common before the daily upload lands).
+    if (!j.rows || j.rows.length === 0) {
+      throw new Error(`No data for ${date} yet — it may not be uploaded to Metabase yet. Try an earlier date.`);
     }
     return j;
   }
@@ -125,7 +137,15 @@
         const msg = `Pulling ${d}  (${i + 1} of ${dates.length})`;
         $("progressText").textContent = msg;
         setTitle(`(${i + 1}/${dates.length}) Pulling…`);
-        pulls[d] = await pullDate(d);
+        if (i === 0) {
+          // The analysis date itself — a miss here is fatal (nothing to analyze).
+          pulls[d] = await pullDate(d);
+        } else {
+          // A prior comparison week — if it has no data, skip it rather than abort,
+          // and the median just uses the weeks that do have data.
+          try { pulls[d] = await pullDate(d); }
+          catch (e) { /* skip this week */ }
+        }
       }
 
       $("progressText").textContent = "Analyzing…";
@@ -270,32 +290,26 @@
       <div class="tiles">
         <div class="tile"><div class="n">${fmt.int(s.totalTrips)}</div><div class="l">trips today</div></div>
         <div class="tile"><div class="n">${s.areas}</div><div class="l">areas</div></div>
-        <div class="tile ${s.addCount ? "alert" : "good"}"><div class="n">${s.addCount}</div><div class="l">under-served slots</div></div>
+        <div class="tile ${s.addCount ? "alert" : "good"}"><div class="n">${s.addCount}</div><div class="l">understaffed slots</div></div>
         <div class="tile good"><div class="n">${s.pullCount}</div><div class="l">over-served slots</div></div>
       </div>`;
 
-    // City-wide week-over-week, the headline answer to "does it compare to last 3 weeks?"
     if (opts.compare && a.transitionSummary) {
       const ts = a.transitionSummary;
       h += `<h3 class="block-title">Versus recent ${wd}s — across all areas</h3>
-        <div class="section-note">How today's area-time slots compare to the median of the prior ${opts.weeks} ${wd}s.</div>
+        <div class="section-note">How today's slots compare to the median of the prior ${opts.weeks} ${wd}s. Tap an area below or its tab to see its slots.</div>
         <div class="tiles wow">
-          <div class="tile alert"><div class="n">${ts.newlyBroken}</div><div class="l">newly broken</div></div>
+          <div class="tile alert"><div class="n">${ts.newlyUnderstaffed}</div><div class="l">newly understaffed</div></div>
           <div class="tile alert"><div class="n">${ts.worsening}</div><div class="l">getting worse</div></div>
           <div class="tile"><div class="n">${ts.improving}</div><div class="l">improving</div></div>
-          <div class="tile"><div class="n">${ts.flat}</div><div class="l">chronic</div></div>
-          <div class="tile good"><div class="n">${ts.fixed}</div><div class="l">recovered</div></div>
+          <div class="tile"><div class="n">${ts.persistent}</div><div class="l">persistent issue</div></div>
+          <div class="tile good"><div class="n">${ts.recovered}</div><div class="l">recovered</div></div>
+          <div class="tile good"><div class="n">${ts.surplus}</div><div class="l">surplus (reclaim)</div></div>
         </div>`;
 
-      // The cross-area transition lists, each collapsible, so this slide IS the comparison view.
-      const t = a.transitions;
-      h += `<div class="ov-groups">`;
-      h += ovGroup("Newly broken", "Fine on recent " + wd + "s, breaching today.", t.newlyBroken, "add", true);
-      h += ovGroup("Getting worse", "Already a problem, worse today than median.", t.worsening, "add", false);
-      h += ovGroup("Improving", "Still breaching but better than median.", t.improving, "watch", false);
-      h += ovGroup("Chronic", "Breaching then and now, roughly flat.", t.flat, "watch", false);
-      h += ovGroup("Recovered", "Was breaching, fine today.", t.fixed, "pull", false);
-      h += `</div>`;
+      // Per-area scoreboard: which areas the counts come from. Name + a row of numbers.
+      h += `<h3 class="block-title">By area — where it's coming from</h3>
+        ${scoreboard(a, opts)}`;
     } else {
       h += `<div class="section-note" style="margin-top:18px">Turn on “Compare to median of prior weeks” and re-run to see week-over-week movement here.</div>`;
     }
@@ -303,19 +317,36 @@
     return h;
   }
 
-  // a collapsible group for the overview slide (open by default only if it's the urgent one)
-  function ovGroup(title, note, list, kind, openByDefault) {
-    const n = list.length;
-    let h = `<details class="ov-det"${openByDefault && n ? " open" : ""}>
-      <summary><span class="ov-sum-title">${escapeHtml(title)}</span> <span class="ov-count">${n}</span></summary>
-      <div class="ov-note">${escapeHtml(note)}</div>`;
-    if (!n) h += `<div class="empty">None.</div>`;
-    else {
-      const maxSev = list[0] && list[0].severity ? list[0].severity : 1;
-      for (const b of list.slice(0, 12)) h += actionRow(b, kind, maxSev, true, true);
-      if (n > 12) h += `<div class="empty">…and ${n - 12} more.</div>`;
+  // Compact per-area tally of the transition categories. Glanceable: name + counts.
+  function scoreboard(a, opts) {
+    // tally per area from bucket.transition + bucket.isSurplus
+    const tally = {};
+    for (const strip of a.strips) tally[strip.area] = { area: strip.area, newU: 0, worse: 0, improving: 0, persistent: 0, recovered: 0, surplus: 0 };
+    for (const b of a.buckets) {
+      const t = tally[b.area]; if (!t) continue;
+      if (b.transition === "new") t.newU++;
+      else if (b.transition === "worse") t.worse++;
+      else if (b.transition === "better") t.improving++;
+      else if (b.transition === "persisting_flat") t.persistent++;
+      else if (b.transition === "fixed") t.recovered++;
+      if (b.isSurplus) t.surplus++;
     }
-    h += `</details>`;
+    // keep area display order (a.strips already ordered)
+    let h = `<div class="gridwrap"><table class="scoreboard"><thead><tr>
+      <th class="area">Area</th>
+      <th title="Newly understaffed">New ↑staff</th>
+      <th>Worse</th><th>Improving</th><th>Persistent</th><th>Recovered</th>
+      <th title="Top surplus slots to reclaim from">Surplus</th>
+    </tr></thead><tbody>`;
+    for (const strip of a.strips) {
+      const t = tally[strip.area];
+      const cell = (n, cls) => `<td>${n ? `<span class="sb-n ${cls}">${n}</span>` : '<span class="sb-z">·</span>'}</td>`;
+      h += `<tr>
+        <td class="area">${escapeHtml(strip.area)}</td>
+        ${cell(t.newU, "bad")}${cell(t.worse, "bad")}${cell(t.improving, "")}${cell(t.persistent, "warn")}${cell(t.recovered, "good")}${cell(t.surplus, "good")}
+      </tr>`;
+    }
+    h += `</tbody></table></div>`;
     return h;
   }
 
@@ -350,19 +381,21 @@
     // Week-over-week, in-place for this area
     if (opts.compare) {
       const wd = weekdayName(opts.date);
+      const surplusN = areaBuckets.filter((b) => b.isSurplus).length;
       h += `<h3 class="block-title">Versus recent ${wd}s</h3>
         <div class="wow-inline">
-          ${wowPill("newly broken", tcount.new, "alert")}
-          ${wowPill("worse", tcount.worse, "alert")}
+          ${wowPill("newly understaffed", tcount.new, "alert")}
+          ${wowPill("getting worse", tcount.worse, "alert")}
           ${wowPill("improving", tcount.better, "")}
-          ${wowPill("chronic", tcount.persisting_flat, "")}
+          ${wowPill("persistent issue", tcount.persisting_flat, "warn")}
           ${wowPill("recovered", tcount.fixed, "good")}
+          ${wowPill("surplus", surplusN, "good")}
         </div>`;
     }
 
-    // Expandable: this area's per-30-min detail
-    h += `<details class="area-detail"><summary class="details-toggle">Show 30-minute detail for ${escapeHtml(shortAreaName(area))}</summary>
-      ${areaDetailTable(areaBuckets, opts.compare)}
+    // Expandable: this area's 30-min blocks, grouped by type (within this area).
+    h += `<details class="area-detail"><summary class="details-toggle">Show 30-minute blocks for ${escapeHtml(shortAreaName(area))}, by type</summary>
+      <div style="margin-top:12px">${areaTypeGroups(areaBuckets, opts.compare)}</div>
     </details>`;
 
     h += `</div>`;
@@ -373,22 +406,49 @@
     return `<span class="wow-pill ${cls}"><b>${n}</b> ${escapeHtml(label)}</span>`;
   }
 
-  // per-area 30-min table
-  function areaDetailTable(buckets, compare) {
-    const sorted = [...buckets].sort((a, b) => (a.hour < b.hour ? -1 : 1));
+  // This area's 30-min blocks, separated by type then listed. Keeps the type sort but
+  // scopes it to one area (area sort on top of type sort).
+  function areaTypeGroups(buckets, compare) {
+    const understaffed = buckets.filter((b) => !b.lowSample && b.breaches.length > 0).sort((a, b) => b.severity - a.severity);
+    const surplus = buckets.filter((b) => b.isSurplus).sort((a, b) => (b.slack || 0) - (a.slack || 0));
+    const lowSample = buckets.filter((b) => b.lowSample && b.breaches.length > 0);
+    const fine = buckets.filter((b) => !b.lowSample && b.breaches.length === 0 && !b.isSurplus);
+
+    let h = "";
+    h += typeBlock("Understaffed — breaching a target", understaffed, "under", compare);
+    h += typeBlock("Surplus — most slack, reclaim candidates", surplus, "over", compare);
+    if (lowSample.length) h += typeBlock("Low sample — too few trips to act on", lowSample, "watch", compare);
+    // healthy/at-benchmark shown compactly as a count, expandable
+    if (fine.length) {
+      h += `<details class="type-fine"><summary>At benchmark — ${fine.length} slot${fine.length>1?"s":""} healthy</summary>
+        ${miniBlockTable(fine.sort((a,b)=>(a.hour<b.hour?-1:1)), compare)}</details>`;
+    }
+    return h;
+  }
+
+  function typeBlock(title, list, tone, compare) {
+    let h = `<div class="type-group">
+      <div class="type-head type-${tone}">${escapeHtml(title)} <span class="type-n">${list.length}</span></div>`;
+    if (!list.length) h += `<div class="empty">None.</div>`;
+    else h += miniBlockTable(list, compare);
+    h += `</div>`;
+    return h;
+  }
+
+  // compact table of 30-min blocks (time, wait, load, cancel, count, optional vs-median)
+  function miniBlockTable(list, compare) {
     let h = `<div class="gridwrap"><table><thead><tr>
-      <th class="area">Time</th><th>Wait</th><th>Load</th><th>%Cancel</th><th>Count</th><th>Drivers</th>${compare ? "<th>vs med</th>" : ""}
+      <th class="area">Time</th><th>Wait</th><th>Load</th><th>%Cancel</th><th>Count</th>${compare ? "<th>wait vs med</th>" : ""}
     </tr></thead><tbody>`;
-    for (const b of sorted) {
+    for (const b of list) {
       const cmp = b.comparison;
       h += `<tr>
-        <td class="area">${escapeHtml(b.hour)}${b.lowSample ? ' <span class="hour">(low n)</span>' : ""}</td>
+        <td class="area">${escapeHtml(b.hour)}</td>
         <td><span class="cell" style="background:${rampColor(b.wait,5,15)}">${fmt.wait(b.wait)}</span></td>
         <td><span class="cell" style="background:${rampColor(b.load,1,2.3)}">${fmt.load(b.load)}</span></td>
         <td><span class="cell" style="background:${rampColor(b.cancel,0.1,0.4)}">${fmt.pct(b.cancel)}</span></td>
         <td>${fmt.int(b.count)}</td>
-        <td>${fmt.int(b.drivers)}</td>
-        ${compare ? `<td>${cmp ? deltaSpan(cmp.dWait, true) + " wait" : "—"}</td>` : ""}
+        ${compare ? `<td>${cmp ? deltaSpan(cmp.dWait, true) : "—"}</td>` : ""}
       </tr>`;
     }
     h += `</tbody></table></div>`;
