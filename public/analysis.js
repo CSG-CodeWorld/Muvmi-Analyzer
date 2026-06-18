@@ -182,19 +182,23 @@
         breaches: b.breaches, lowSample: b.lowSample,
       }));
 
-      // ONE anchor per area, always. The single best contiguous window to put an
-      // incentive block over — chosen to capture the day's real pressure, not faint
-      // marginal stretches.
       const anchor = bestAnchor(cells);
-      // One optional reclaim hint: the single clearly over-served block, if any.
       const reclaim = bestReclaim(cells);
-
       const trips = list.reduce((s, b) => s + b.count, 0);
       strips.push({ area, cells, anchor, reclaim, trips });
     }
-    // Most actionable first: by the anchor's intensity (a calm area's anchor is weak).
-    strips.sort((a, b) => (b.anchor ? b.anchor.score : 0) - (a.anchor ? a.anchor.score : 0));
+    // Fixed display order per the supervisor's list. Match loosely (ignore the
+    // " - District" suffix and spacing/case) so "Chula" matches "Chula - Chidlom".
+    // Any area not on the list keeps its full name and falls to the end.
+    strips.sort((a, b) => areaOrderRank(a.area) - areaOrderRank(b.area) || (a.area < b.area ? -1 : 1));
     return strips;
+  }
+
+  const AREA_ORDER = ["chula", "silom", "rattanakosin", "wongwianyai", "ari", "phahol", "bangsue", "sukhumvit", "ratchada", "onnut"];
+  function areaOrderRank(name) {
+    const key = String(name).toLowerCase().split(" - ")[0].replace(/[\s-]/g, "");
+    const i = AREA_ORDER.findIndex((a) => key.startsWith(a) || a.startsWith(key));
+    return i === -1 ? 999 : i;
   }
 
   // Find the single best window to anchor an incentive block over.

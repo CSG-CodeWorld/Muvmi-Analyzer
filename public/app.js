@@ -189,113 +189,277 @@
   }
 
   function render(a, opts) {
+    const slides = [];
+
+    // ===== SLIDE 1: OPENING OVERVIEW (overall + week-over-week across all areas) =====
+    slides.push({ name: "Overview", html: slideOverview(a, opts) });
+
+    // ===== PER-AREA SLIDES (everything for that area together) =====
+    for (const strip of a.strips) {
+      slides.push({ name: shortAreaName(strip.area), html: slideArea(strip, a, opts) });
+    }
+
+    // ===== CLOSING SLIDE: ACTIONS =====
+    slides.push({ name: "Actions", html: slideActions(a, opts) });
+
+    // Build the deck: a nav strip of jump-to buttons + a horizontal scroller.
+    let nav = `<div class="deck-nav">`;
+    slides.forEach((s, i) => {
+      nav += `<button class="deck-tab${i === 0 ? " active" : ""}" data-slide="${i}">${escapeHtml(s.name)}</button>`;
+    });
+    nav += `</div>`;
+
+    let track = `<div class="deck-track" id="deckTrack">`;
+    slides.forEach((s, i) => {
+      track += `<div class="slide" data-slide="${i}">${s.html}</div>`;
+    });
+    track += `</div>`;
+
+    const arrows = `<div class="deck-arrows">
+      <button class="deck-arrow" id="deckPrev" aria-label="Previous">‹</button>
+      <button class="deck-arrow" id="deckNext" aria-label="Next">›</button>
+    </div>`;
+
+    $("report").innerHTML = `<div class="deck">${nav}${arrows}${track}</div>`;
+    wireDeck(slides.length);
+  }
+
+  // ---- Deck navigation ----
+  function wireDeck(count) {
+    const track = $("deckTrack");
+    let cur = 0;
+    const tabs = Array.from(document.querySelectorAll(".deck-tab"));
+    const go = (i) => {
+      cur = Math.max(0, Math.min(count - 1, i));
+      const slide = track.querySelector(`.slide[data-slide="${cur}"]`);
+      if (slide) track.scrollTo({ left: slide.offsetLeft - track.offsetLeft, behavior: "smooth" });
+      tabs.forEach((t, j) => t.classList.toggle("active", j === cur));
+    };
+    tabs.forEach((t) => t.addEventListener("click", () => go(parseInt(t.dataset.slide, 10))));
+    const prev = $("deckPrev"), next = $("deckNext");
+    if (prev) prev.addEventListener("click", () => go(cur - 1));
+    if (next) next.addEventListener("click", () => go(cur + 1));
+    // keyboard arrows
+    document.addEventListener("keydown", (e) => {
+      if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+      if (e.key === "ArrowRight") go(cur + 1);
+      else if (e.key === "ArrowLeft") go(cur - 1);
+    });
+    // update active tab on manual scroll
+    let scrollTimer;
+    track.addEventListener("scroll", () => {
+      clearTimeout(scrollTimer);
+      scrollTimer = setTimeout(() => {
+        const slides = Array.from(track.querySelectorAll(".slide"));
+        const mid = track.scrollLeft + track.clientWidth / 2;
+        let nearest = 0, nd = Infinity;
+        slides.forEach((s, i) => { const c = s.offsetLeft - track.offsetLeft + s.clientWidth / 2; const d = Math.abs(c - mid); if (d < nd) { nd = d; nearest = i; } });
+        cur = nearest;
+        tabs.forEach((t, j) => t.classList.toggle("active", j === cur));
+      }, 90);
+    });
+  }
+
+  // ---- Slide 1: opening overview ----
+  function slideOverview(a, opts) {
     const s = a.summary;
-    const T = a.targets;
-    let html = "";
-
-    // SUMMARY
-    html += `<section>
-      <div class="eyebrow">Summary · ${escapeHtml(opts.date)}${opts.compare ? ` · vs median of ${opts.weeks} prior ${weekdayName(opts.date)}s` : ""}</div>
+    const wd = weekdayName(opts.date);
+    let h = `<div class="slide-inner">
+      <div class="eyebrow">${escapeHtml(opts.date)} · ${wd}${opts.compare ? ` · vs median of ${opts.weeks} prior ${wd}s` : ""}</div>
+      <h2 class="slide-title">Daily overview</h2>
       <div class="tiles">
-        <div class="tile"><div class="n">${fmt.int(s.totalTrips)}</div><div class="l">trips</div></div>
+        <div class="tile"><div class="n">${fmt.int(s.totalTrips)}</div><div class="l">trips today</div></div>
         <div class="tile"><div class="n">${s.areas}</div><div class="l">areas</div></div>
-        <div class="tile ${s.criticalCount ? "alert" : "good"}"><div class="n">${s.criticalCount}</div><div class="l">critical buckets</div></div>
-        <div class="tile ${s.addCount ? "alert" : ""}"><div class="n">${s.addCount}</div><div class="l">need more drivers</div></div>
-        <div class="tile good"><div class="n">${s.pullCount}</div><div class="l">over-served</div></div>
-        <div class="tile"><div class="n">${s.watchCount}</div><div class="l">low-sample</div></div>
-      </div>
-    </section>`;
+        <div class="tile ${s.addCount ? "alert" : "good"}"><div class="n">${s.addCount}</div><div class="l">under-served slots</div></div>
+        <div class="tile good"><div class="n">${s.pullCount}</div><div class="l">over-served slots</div></div>
+      </div>`;
 
-    // ---- DAY STRIPS (the hero) ----
-    html += `<section>
-      <div class="eyebrow">Incentive windows · ${escapeHtml(opts.date)}</div>
-      <h2 class="section-title">Where to anchor incentive blocks</h2>
-      <div class="section-note">Each area's day at a glance — color is severity (green = healthy, red = under-served). Incentives are shift blocks, so the call-outs are contiguous windows, not single slots. Peak marks where pressure is highest.</div>
-      ${stripLegend()}`;
-    for (const strip of a.strips) html += stripBlock(strip, opts.compare);
-    html += `</section>`;
+    // City-wide week-over-week, the headline answer to "does it compare to last 3 weeks?"
+    if (opts.compare && a.transitionSummary) {
+      const ts = a.transitionSummary;
+      h += `<h3 class="block-title">Versus recent ${wd}s — across all areas</h3>
+        <div class="section-note">How today's area-time slots compare to the median of the prior ${opts.weeks} ${wd}s.</div>
+        <div class="tiles wow">
+          <div class="tile alert"><div class="n">${ts.newlyBroken}</div><div class="l">newly broken</div></div>
+          <div class="tile alert"><div class="n">${ts.worsening}</div><div class="l">getting worse</div></div>
+          <div class="tile"><div class="n">${ts.improving}</div><div class="l">improving</div></div>
+          <div class="tile"><div class="n">${ts.flat}</div><div class="l">chronic</div></div>
+          <div class="tile good"><div class="n">${ts.fixed}</div><div class="l">recovered</div></div>
+        </div>`;
 
-    // ---- DETAILS (collapsed) ----
-    html += `<section><details><summary class="details-toggle">Detail — ranked buckets, week-over-week changes, area rollup, raw grid</summary><div style="margin-top:16px">`;
-
-    if (opts.compare && a.transitions) {
+      // The cross-area transition lists, each collapsible, so this slide IS the comparison view.
       const t = a.transitions;
+      h += `<div class="ov-groups">`;
+      h += ovGroup("Newly broken", "Fine on recent " + wd + "s, breaching today.", t.newlyBroken, "add", true);
+      h += ovGroup("Getting worse", "Already a problem, worse today than median.", t.worsening, "add", false);
+      h += ovGroup("Improving", "Still breaching but better than median.", t.improving, "watch", false);
+      h += ovGroup("Chronic", "Breaching then and now, roughly flat.", t.flat, "watch", false);
+      h += ovGroup("Recovered", "Was breaching, fine today.", t.fixed, "pull", false);
+      h += `</div>`;
+    } else {
+      h += `<div class="section-note" style="margin-top:18px">Turn on “Compare to median of prior weeks” and re-run to see week-over-week movement here.</div>`;
+    }
+    h += `</div>`;
+    return h;
+  }
+
+  // a collapsible group for the overview slide (open by default only if it's the urgent one)
+  function ovGroup(title, note, list, kind, openByDefault) {
+    const n = list.length;
+    let h = `<details class="ov-det"${openByDefault && n ? " open" : ""}>
+      <summary><span class="ov-sum-title">${escapeHtml(title)}</span> <span class="ov-count">${n}</span></summary>
+      <div class="ov-note">${escapeHtml(note)}</div>`;
+    if (!n) h += `<div class="empty">None.</div>`;
+    else {
+      const maxSev = list[0] && list[0].severity ? list[0].severity : 1;
+      for (const b of list.slice(0, 12)) h += actionRow(b, kind, maxSev, true, true);
+      if (n > 12) h += `<div class="empty">…and ${n - 12} more.</div>`;
+    }
+    h += `</details>`;
+    return h;
+  }
+
+  // ---- Per-area slide: everything for one area ----
+  function slideArea(strip, a, opts) {
+    const area = strip.area;
+    // volume-weighted day averages for this area
+    const roll = a.areaRollup.find((r) => r.area === area) || { avgWait: 0, avgLoad: 0, avgCancel: 0, breachBuckets: 0, totalBuckets: 0 };
+    // this area's transition tallies
+    const areaBuckets = a.buckets.filter((b) => b.area === area);
+    const tcount = { new: 0, worse: 0, better: 0, persisting_flat: 0, fixed: 0 };
+    if (opts.compare) for (const b of areaBuckets) if (b.transition && tcount[b.transition] !== undefined) tcount[b.transition]++;
+
+    let h = `<div class="slide-inner">
+      <div class="eyebrow">${escapeHtml(opts.date)} · area</div>
+      <h2 class="slide-title">${escapeHtml(area)}</h2>
+      <div class="area-headline">
+        <span class="ah-metric"><span class="ah-l">trips</span><span class="ah-v">${fmt.int(strip.trips)}</span></span>
+        <span class="ah-metric"><span class="ah-l">avg wait</span><span class="ah-v" style="color:${rampColor(roll.avgWait,5,15)}">${fmt.wait(roll.avgWait)}</span></span>
+        <span class="ah-metric"><span class="ah-l">avg load</span><span class="ah-v" style="color:${rampColor(roll.avgLoad,1,2.3)}">${fmt.load(roll.avgLoad)}</span></span>
+        <span class="ah-metric"><span class="ah-l">avg cancel</span><span class="ah-v" style="color:${rampColor(roll.avgCancel,0.1,0.4)}">${fmt.pct(roll.avgCancel)}</span></span>
+        <span class="ah-metric"><span class="ah-l">breaching</span><span class="ah-v">${roll.breachBuckets}/${roll.totalBuckets}</span></span>
+      </div>
+
+      <h3 class="block-title">The day</h3>
+      ${stripLegend()}
+      ${stripBars(strip)}
+
+      <h3 class="block-title">Recommendation</h3>
+      ${stripRecs(strip)}`;
+
+    // Week-over-week, in-place for this area
+    if (opts.compare) {
       const wd = weekdayName(opts.date);
-      html += `<section>
-        <div class="eyebrow">Versus recent ${wd}s</div>
-        <h2 class="section-title">What changed week over week</h2>
-        <div class="section-note">Each bucket compared to the median of the prior ${opts.weeks} ${wd}s. "Problem" = breaching any target. This answers what's new, what's chronic, and what's recovered — so you're not eyeballing deltas.</div>`;
-
-      html += transitionGroup("New problems", "Fine on recent " + wd + "s, breaching today — worth chasing now.", t.newlyBroken, "add");
-      html += transitionGroup("Getting worse", "Already a problem, and worse today than its recent median — escalating.", t.worsening, "add");
-      html += transitionGroup("Still a problem, but improving", "Breaching both then and now, but better today than its median — moving the right way.", t.improving, "watch");
-      html += transitionGroup("Chronic (holding flat)", "Breaching then and now, roughly unchanged — incentives haven't shifted these; may need a standing change.", t.flat, "watch");
-      html += transitionGroup("Recovered", "Was breaching on recent " + wd + "s, fine today — attention here is paying off.", t.fixed, "pull");
-      html += `</section>`;
+      h += `<h3 class="block-title">Versus recent ${wd}s</h3>
+        <div class="wow-inline">
+          ${wowPill("newly broken", tcount.new, "alert")}
+          ${wowPill("worse", tcount.worse, "alert")}
+          ${wowPill("improving", tcount.better, "")}
+          ${wowPill("chronic", tcount.persisting_flat, "")}
+          ${wowPill("recovered", tcount.fixed, "good")}
+        </div>`;
     }
 
-    // ADD LIST
-    html += `<section>
-      <div class="eyebrow">Priority</div>
-      <h2 class="section-title">Bump incentive here</h2>
-      <div class="section-note">Under-served buckets breaching targets, by severity. A pay bump should pull drivers toward the top of this list. Flagged buckets have high wait but low load — incentives may not fix those.</div>`;
-    if (!a.addList.length) html += `<div class="empty">No buckets breaching targets with adequate volume. Good day.</div>`;
-    const maxSev = a.addList.length ? a.addList[0].severity : 1;
-    for (const b of a.addList.slice(0, 25)) html += actionRow(b, "add", maxSev, opts.compare);
-    if (a.addList.length > 25) html += `<div class="empty">…and ${a.addList.length - 25} more.</div>`;
-    html += `</section>`;
+    // Expandable: this area's per-30-min detail
+    h += `<details class="area-detail"><summary class="details-toggle">Show 30-minute detail for ${escapeHtml(shortAreaName(area))}</summary>
+      ${areaDetailTable(areaBuckets, opts.compare)}
+    </details>`;
 
-    // PULL LIST
-    html += `<section>
-      <div class="eyebrow">Reclaim</div>
-      <h2 class="section-title">Can pull incentive here</h2>
-      <div class="section-note">Over-served buckets — low load, short waits, few cancellations. Incentive here can be reduced and redirected to the priority list.</div>`;
-    if (!a.pullList.length) html += `<div class="empty">No clearly over-served buckets.</div>`;
-    for (const b of a.pullList.slice(0, 20)) html += actionRow(b, "pull", 1, opts.compare);
-    html += `</section>`;
+    h += `</div>`;
+    return h;
+  }
 
-    // WATCH LIST
-    if (a.watchList.length) {
-      html += `<section>
-        <div class="eyebrow">Low confidence</div>
-        <h2 class="section-title">Watch — too few trips to act on</h2>
-        <div class="section-note">These breach targets but on fewer than ${a.volumeFloor} trips, so a single cancellation or slow ride distorts the rate. Kept out of the ranking on purpose.</div>`;
-      for (const b of a.watchList.slice(0, 15)) html += actionRow(b, "watch", 1, opts.compare);
-      html += `</section>`;
-    }
+  function wowPill(label, n, cls) {
+    return `<span class="wow-pill ${cls}"><b>${n}</b> ${escapeHtml(label)}</span>`;
+  }
 
-    // AREA ROLLUP
-    html += `<section>
-      <div class="eyebrow">By area</div>
-      <h2 class="section-title">Area rollup</h2>
-      <div class="section-note">Volume-weighted day averages. Distinguishes a structurally strained area (many buckets breaching) from one with a single bad slot.</div>
-      <div class="gridwrap"><table><thead><tr>
-        <th class="area">Area</th><th>Trips</th><th>Avg wait</th><th>Avg load</th><th>Avg cancel</th><th>Breaching</th>
-      </tr></thead><tbody>`;
-    for (const r of a.areaRollup) {
-      const lowVol = r.trips < a.volumeFloor * 3;
-      html += `<tr>
-        <td class="area">${escapeHtml(r.area)}${lowVol ? ' <span class="hour">(low volume)</span>' : ""}</td>
-        <td><span class="cell" style="background:${rampColor(r.avgWait, 5, 15)}">${fmt.wait(r.avgWait)}</span></td>
-        <td><span class="cell" style="background:${rampColor(r.avgLoad, 1, 2.3)}">${fmt.load(r.avgLoad)}</span></td>
-        <td><span class="cell" style="background:${rampColor(r.avgCancel, 0.1, 0.4)}">${fmt.pct(r.avgCancel)}</span></td>
-        <td>${r.breachBuckets}/${r.totalBuckets}</td>
+  // per-area 30-min table
+  function areaDetailTable(buckets, compare) {
+    const sorted = [...buckets].sort((a, b) => (a.hour < b.hour ? -1 : 1));
+    let h = `<div class="gridwrap"><table><thead><tr>
+      <th class="area">Time</th><th>Wait</th><th>Load</th><th>%Cancel</th><th>Count</th><th>Drivers</th>${compare ? "<th>vs med</th>" : ""}
+    </tr></thead><tbody>`;
+    for (const b of sorted) {
+      const cmp = b.comparison;
+      h += `<tr>
+        <td class="area">${escapeHtml(b.hour)}${b.lowSample ? ' <span class="hour">(low n)</span>' : ""}</td>
+        <td><span class="cell" style="background:${rampColor(b.wait,5,15)}">${fmt.wait(b.wait)}</span></td>
+        <td><span class="cell" style="background:${rampColor(b.load,1,2.3)}">${fmt.load(b.load)}</span></td>
+        <td><span class="cell" style="background:${rampColor(b.cancel,0.1,0.4)}">${fmt.pct(b.cancel)}</span></td>
+        <td>${fmt.int(b.count)}</td>
+        <td>${fmt.int(b.drivers)}</td>
+        ${compare ? `<td>${cmp ? deltaSpan(cmp.dWait, true) + " wait" : "—"}</td>` : ""}
       </tr>`;
     }
-    html += `</tbody></table></div></section>`;
+    h += `</tbody></table></div>`;
+    return h;
+  }
 
-    // FULL GRID (auditable raw data, collapsed)
-    html += `<section>
-      <div class="eyebrow">Source</div>
-      <details><summary>Full data grid (${a.buckets.length} buckets) — for auditing against Metabase</summary>
-      ${fullGrid(a)}
-      </details>
-    </section>`;
+  // ---- Closing slide: actions ----
+  function slideActions(a, opts) {
+    let h = `<div class="slide-inner">
+      <div class="eyebrow">${escapeHtml(opts.date)} · what to do</div>
+      <h2 class="slide-title">Actions</h2>
+      <div class="section-note">Recommended incentive-block changes across all areas, in display order. Anchor = where to put or strengthen a block; reclaim = where a block can be eased.</div>`;
 
-    // close the DETAILS wrapper opened after the strips
-    html += `</div></details></section>`;
+    h += `<div class="act-list">`;
+    for (const strip of a.strips) {
+      const an = strip.anchor;
+      const anchorTxt = an && an.real
+        ? `<span class="act-anchor">Anchor <b>${an.start}–${an.end}</b> (peak ${an.peakHour}${an.strength === "strong" ? ", strong" : ""})</span>`
+        : `<span class="act-none">No block change needed</span>`;
+      const reclaimTxt = strip.reclaim ? `<span class="act-reclaim">Reclaim ${strip.reclaim.start}–${strip.reclaim.end}</span>` : "";
+      h += `<div class="act-row">
+        <span class="act-area">${escapeHtml(strip.area)}</span>
+        <span class="act-recs">${anchorTxt}${reclaimTxt}</span>
+      </div>`;
+    }
+    h += `</div>`;
 
-    $("report").innerHTML = html;
+    // full audit grid still reachable here
+    h += `<details class="area-detail" style="margin-top:22px"><summary class="details-toggle">Full data grid — all areas, for auditing against Metabase</summary>${fullGrid(a)}</details>`;
+    h += `</div>`;
+    return h;
+  }
+
+  function shortAreaName(area) { return String(area).split(" - ")[0]; }
+
+  // strip bars only (no head/recs) — used inside the area slide
+  function stripBars(strip) {
+    const cells = strip.cells;
+    const anchor = strip.anchor;
+    let bar = `<div class="strip">`;
+    for (const c of cells) {
+      let bg;
+      if (c.lowSample) bg = "transparent";
+      else if (c.state === "over") bg = "var(--good)";
+      else if (c.state === "ok") bg = "#cfd8d0";
+      else bg = sevToColor(c.severity);
+      const isPeak = anchor && anchor.peakHour === c.hour && anchor.real;
+      bar += `<div class="strip-cell${c.lowSample ? " lowsample" : ""}" style="background:${bg}" title="${escapeHtml(c.hour)} · wait ${c.wait.toFixed(1)} · load ${c.load.toFixed(2)} · cancel ${(c.cancel*100).toFixed(0)}% · n ${c.count}">${isPeak ? '<span class="peak">◆</span>' : ""}</div>`;
+    }
+    bar += `</div>`;
+    const ticks = `<div class="strip-ticks"><span style="flex:1;text-align:left">${cells.length ? cells[0].hour : ""}</span><span style="flex:1;text-align:right">${cells.length ? cells[cells.length-1].hour : ""}</span></div>`;
+    return bar + ticks;
+  }
+
+  // recommendation rows only — used inside the area slide
+  function stripRecs(strip) {
+    const anchor = strip.anchor;
+    let recs = `<div class="strip-recs">`;
+    if (anchor) {
+      if (anchor.real) {
+        const tierWord = anchor.strength === "strong" ? ", strong tier" : (anchor.strength === "moderate" ? ", standard tier" : "");
+        recs += `<div class="rec rec-under"><b>Anchor incentive block ${anchor.start}–${anchor.end}</b> · peak ${anchor.peakHour} — put a shift block over this window${tierWord}.</div>`;
+      } else {
+        recs += `<div class="rec rec-ok">No window breaching targets today. Softest stretch ${anchor.start}–${anchor.end} — no block change needed.</div>`;
+      }
+    }
+    if (strip.reclaim) {
+      recs += `<div class="rec rec-over"><b>Over-served ${strip.reclaim.start}–${strip.reclaim.end}</b> — lower tier or no incentive; reclaim for the anchor above.</div>`;
+    }
+    recs += `</div>`;
+    return recs;
   }
 
   // ---- Day strip rendering ----
