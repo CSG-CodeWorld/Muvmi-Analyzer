@@ -304,8 +304,8 @@
       try { pb = toBuckets(pull.cols, pull.rows); } catch { continue; }
       for (const b of pb) {
         const k = b.area + "|" + b.hour;
-        const e = (priorBucketsByKey[k] = priorBucketsByKey[k] || { wait: [], load: [], cancel: [] });
-        e.wait.push(b.wait); e.load.push(b.load); e.cancel.push(b.cancel);
+        const e = (priorBucketsByKey[k] = priorBucketsByKey[k] || { wait: [], load: [], cancel: [], count: [] });
+        e.wait.push(b.wait); e.load.push(b.load); e.cancel.push(b.cancel); e.count.push(b.count);
       }
     }
 
@@ -323,13 +323,14 @@
       const k = b.area + "|" + b.hour;
       const e = priorBucketsByKey[k];
       if (!e) { b.comparison = null; continue; }
-      const medWait = median(e.wait), medLoad = median(e.load), medCancel = median(e.cancel);
+      const medWait = median(e.wait), medLoad = median(e.load), medCancel = median(e.cancel), medCount = median(e.count);
       b.comparison = {
         weeks: e.wait.length,
-        medWait, medLoad, medCancel,
+        medWait, medLoad, medCancel, medCount,
         dWait: b.wait - (medWait ?? b.wait),
         dLoad: b.load - (medLoad ?? b.load),
         dCancel: b.cancel - (medCancel ?? b.cancel),
+        dCount: b.count - (medCount ?? b.count),
       };
 
       const wasProblem = breachesVals(medWait, medLoad, medCancel).length > 0;
@@ -377,16 +378,32 @@
     const moreOver = surplus.filter((b) => b.wasSlack && b.slack - (computeSlack({ wait: b.comparison.medWait, load: b.comparison.medLoad, cancel: b.comparison.medCancel, count: b.count, breaches: [] })) > 0.05);
     const steadyOver = surplus.filter((b) => !newlyOver.includes(b) && !moreOver.includes(b));
 
+    // ---- Deficit — the INVERSE of surplus. RELATIVE top-slice of the most severely
+    // understaffed slots. Mirrors the surplus logic exactly: rank everything that's
+    // breaching (severity > 0) against each other, surface only the worst. This is the
+    // priority signal — which areas the truly-worst slots cluster in — distinct from a
+    // raw count of all breaching slots.
+    const deficitPool = withCmp.filter((b) => b.severity > 0).sort((a, b) => b.severity - a.severity);
+    let deficit = [];
+    if (deficitPool.length) {
+      const sevVals = deficitPool.map((b) => b.severity);
+      const medSev = median(sevVals);
+      const cutoff = Math.max(medSev * 1.15, sevVals[0] * 0.5);
+      const topCount = Math.max(1, Math.min(Math.ceil(deficitPool.length * 0.25), 30));
+      deficit = deficitPool.filter((b) => b.severity >= cutoff).slice(0, topCount);
+    }
+    const deficitSet = new Set(deficit);
+
     todayAnalysis.transitions = {
       newlyUnderstaffed: withCmp.filter((b) => b.transition === "new").sort((a, b) => sevNow(b) - sevNow(a)),
       worsening:   withCmp.filter((b) => b.transition === "worse").sort((a, b) => sevNow(b) - sevNow(a)),
       improving:   withCmp.filter((b) => b.transition === "better").sort((a, b) => sevNow(b) - sevNow(a)),
       persistent:  withCmp.filter((b) => b.transition === "persisting_flat").sort((a, b) => sevNow(b) - sevNow(a)),
       recovered:   withCmp.filter((b) => b.transition === "fixed").sort((a, b) => (b.comparison.medWait) - (a.comparison.medWait)),
-      // surplus categories (relative top-slice)
       newlyOverstaffed: newlyOver,
       moreOverstaffed: moreOver,
-      surplus, // combined, for the per-area scoreboard
+      surplus,  // combined surplus top-slice, for the per-area scoreboard
+      deficit,  // combined deficit top-slice, for the per-area scoreboard (priority)
     };
     todayAnalysis.transitionSummary = {
       newlyUnderstaffed: todayAnalysis.transitions.newlyUnderstaffed.length,
@@ -395,9 +412,10 @@
       persistent: todayAnalysis.transitions.persistent.length,
       recovered: todayAnalysis.transitions.recovered.length,
       surplus: surplus.length,
+      deficit: deficit.length,
     };
-    // tag surplus buckets so per-area views can find them
-    for (const b of todayAnalysis.buckets) b.isSurplus = surplusSet.has(b);
+    // tag buckets so per-area views can find them
+    for (const b of todayAnalysis.buckets) { b.isSurplus = surplusSet.has(b); b.isDeficit = deficitSet.has(b); }
     return todayAnalysis;
   }
 
