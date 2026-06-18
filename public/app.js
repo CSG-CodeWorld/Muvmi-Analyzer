@@ -315,6 +315,7 @@
       h += `<h3 class="block-title">Versus recent ${wd}s — across all areas</h3>
         <div class="section-note">How today's slots compare to the median of the prior ${opts.weeks} ${wd}s. Tap an area below or its tab to see its slots.</div>
         <div class="tiles wow">
+          <div class="tile alert"><div class="n">${ts.deficit}</div><div class="l">critical slots</div></div>
           <div class="tile alert"><div class="n">${ts.newlyUnderstaffed}</div><div class="l">newly understaffed</div></div>
           <div class="tile alert"><div class="n">${ts.worsening}</div><div class="l">getting worse</div></div>
           <div class="tile"><div class="n">${ts.improving}</div><div class="l">improving</div></div>
@@ -347,11 +348,11 @@
       if (b.isSurplus) t.surplus++;
       if (b.isDeficit) t.priority++;
     }
-    // Priority (deficit) leads — it's the "where are the worst understaffed slots"
+    // Critical (deficit) leads — it's the "where are the worst understaffed slots"
     // signal, the inverse of surplus. Then the movement columns, then surplus.
     let h = `<div class="gridwrap"><table class="scoreboard"><thead><tr>
       <th class="area">Area</th>
-      <th title="Worst understaffed slots citywide that fall in this area — the top-priority deficits">Priority</th>
+      <th title="Count of this area's 30-min slots that rank among the most severely understaffed citywide. Higher = more of the worst slots = more urgent. (A count, not a rank.)">Critical</th>
       <th title="Slots fine on recent weeks but understaffed today">Newly u.staffed</th>
       <th title="Already understaffed, worse than recent median">Worse</th>
       <th title="Still understaffed but better than recent median">Improving</th>
@@ -705,8 +706,8 @@
       <h3>Understaffed vs. surplus</h3>
       <dl>
         <dt>Understaffed</dt><dd>A slot breaching any of the three benchmarks. This is an <em>absolute</em> judgment — over a target is over a target.</dd>
-        <dt>Surplus</dt><dd>A slot that is comfortably under every benchmark <em>and</em> among the most slack citywide. This is <em>relative</em>: being barely fine doesn’t count, only the most over-served slots are surfaced — the best candidates to pull incentive from.</dd>
-        <dt>Priority (in the area scoreboard)</dt><dd>The inverse of Surplus: the most severely understaffed slots citywide, and which areas they fall in. Use it to see which areas are the true top priorities, not just where there are many small breaches.</dd>
+        <dt>Surplus</dt><dd>A <em>count</em> of this area's 30-min slots that are comfortably under every benchmark <em>and</em> among the most slack citywide. <em>Relative</em>: being barely fine doesn't count — only the most over-served slots are surfaced, as the best candidates to pull incentive from. Higher count = more slack slots here.</dd>
+        <dt>Critical (in the “across all areas” tiles and the area scoreboard)</dt><dd>The mirror image of Surplus, on the understaffed end — a <em>count</em> of this area's 30-min slots that rank among the most severely understaffed citywide. Not every breach, just the worst ones. <strong>The number is a count of slots, not a rank:</strong> “Critical 11” means 11 of this area's slots are among the worst citywide. Higher = more urgent, same direction as Surplus.</dd>
         <dt>Severity</dt><dd>How far a slot is over the benchmarks (shown +), or how slack it is (shown −). Wait is weighted most because it’s the customer-experience goal.</dd>
       </dl>
 
