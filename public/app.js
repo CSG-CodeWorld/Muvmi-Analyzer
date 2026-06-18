@@ -335,9 +335,8 @@
 
   // Compact per-area tally of the transition categories. Glanceable: name + counts.
   function scoreboard(a, opts) {
-    // tally per area from bucket.transition + bucket.isSurplus
     const tally = {};
-    for (const strip of a.strips) tally[strip.area] = { area: strip.area, newU: 0, worse: 0, improving: 0, persistent: 0, recovered: 0, surplus: 0 };
+    for (const strip of a.strips) tally[strip.area] = { area: strip.area, priority: 0, newU: 0, worse: 0, improving: 0, persistent: 0, recovered: 0, surplus: 0 };
     for (const b of a.buckets) {
       const t = tally[b.area]; if (!t) continue;
       if (b.transition === "new") t.newU++;
@@ -346,20 +345,26 @@
       else if (b.transition === "persisting_flat") t.persistent++;
       else if (b.transition === "fixed") t.recovered++;
       if (b.isSurplus) t.surplus++;
+      if (b.isDeficit) t.priority++;
     }
-    // keep area display order (a.strips already ordered)
+    // Priority (deficit) leads — it's the "where are the worst understaffed slots"
+    // signal, the inverse of surplus. Then the movement columns, then surplus.
     let h = `<div class="gridwrap"><table class="scoreboard"><thead><tr>
       <th class="area">Area</th>
-      <th title="Newly understaffed">New ↑staff</th>
-      <th>Worse</th><th>Improving</th><th>Persistent</th><th>Recovered</th>
-      <th title="Top surplus slots to reclaim from">Surplus</th>
+      <th title="Worst understaffed slots citywide that fall in this area — the top-priority deficits">Priority</th>
+      <th title="Slots fine on recent weeks but understaffed today">Newly u.staffed</th>
+      <th title="Already understaffed, worse than recent median">Worse</th>
+      <th title="Still understaffed but better than recent median">Improving</th>
+      <th title="Understaffed on recent weeks and still today, roughly flat">Persistent</th>
+      <th title="Was understaffed on recent weeks, fine today">Recovered</th>
+      <th title="Most over-served slots citywide that fall in this area — reclaim candidates">Surplus</th>
     </tr></thead><tbody>`;
     for (const strip of a.strips) {
       const t = tally[strip.area];
       const cell = (n, cls) => `<td>${n ? `<span class="sb-n ${cls}">${n}</span>` : '<span class="sb-z">·</span>'}</td>`;
       h += `<tr>
         <td class="area">${escapeHtml(strip.area)}</td>
-        ${cell(t.newU, "bad")}${cell(t.worse, "bad")}${cell(t.improving, "")}${cell(t.persistent, "warn")}${cell(t.recovered, "good")}${cell(t.surplus, "good")}
+        ${cell(t.priority, "bad")}${cell(t.newU, "bad")}${cell(t.worse, "bad")}${cell(t.improving, "")}${cell(t.persistent, "warn")}${cell(t.recovered, "good")}${cell(t.surplus, "good")}
       </tr>`;
     }
     h += `</tbody></table></div>`;
@@ -452,22 +457,24 @@
   }
 
   // compact table of 30-min blocks: each stat shows its value + delta vs prior-week
-  // median inline (no data dropped), plus a severity column (how far over/under).
+  // median inline (no data dropped), plus distinct drivers and a severity column.
   function miniBlockTable(list, compare) {
     let h = `<div class="gridwrap"><table><thead><tr>
-      <th class="area">Time</th><th>Wait</th><th>Load</th><th>%Cancel</th><th>Count</th><th>Severity</th>
+      <th class="area">Time</th><th>Wait</th><th>Load</th><th>%Cancel</th><th>Count</th><th>Drivers</th><th>Severity</th>
     </tr></thead><tbody>`;
     for (const b of list) {
       const cmp = b.comparison;
-      // severity: positive = over target (bad), shown as +; surplus = under, shown as −slack.
       const sevVal = b.severity > 0 ? `+${b.severity.toFixed(2)}` : (b.slack > 0 ? `−${b.slack.toFixed(2)}` : "0");
       const sevCls = b.severity > 0 ? "sev-over" : (b.slack > 0 ? "sev-under" : "");
+      // count delta is volume, not good/bad — render it neutral.
+      const countDelta = (compare && cmp) ? `<span class="delta neutral">${cmp.dCount > 0 ? "▲" : cmp.dCount < 0 ? "▼" : ""}${cmp.dCount ? Math.abs(Math.round(cmp.dCount)) : ""}</span>` : "";
       h += `<tr>
         <td class="area">${escapeHtml(b.hour)}</td>
         <td><span class="cell" style="background:${rampColor(b.wait,5,15)}">${fmt.wait(b.wait)}</span>${compare && cmp ? deltaSpan(cmp.dWait, true) : ""}</td>
         <td><span class="cell" style="background:${rampColor(b.load,1,2.3)}">${fmt.load(b.load)}</span>${compare && cmp ? deltaSpan(cmp.dLoad, true) : ""}</td>
         <td><span class="cell" style="background:${rampColor(b.cancel,0.1,0.4)}">${fmt.pct(b.cancel)}</span>${compare && cmp ? deltaSpan(cmp.dCancel * 100, true) : ""}</td>
-        <td>${fmt.int(b.count)}</td>
+        <td>${fmt.int(b.count)}${countDelta}</td>
+        <td>${fmt.int(b.drivers)}</td>
         <td><span class="sev-tag ${sevCls}">${sevVal}</span></td>
       </tr>`;
     }
@@ -675,8 +682,62 @@
   $("loginBtn").addEventListener("click", doLogin);
   $("p").addEventListener("keydown", (e) => { if (e.key === "Enter") doLogin(); });
   $("u").addEventListener("keydown", (e) => { if (e.key === "Enter") $("p").focus(); });
+  // ---- Help / glossary modal ----
+  function openHelp() {
+    const existing = document.getElementById("helpOverlay");
+    if (existing) { existing.remove(); return; }
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    overlay.id = "helpOverlay";
+    overlay.innerHTML = `<div class="modal" role="dialog" aria-label="Help">
+      <button class="modal-close" id="helpClose">Close</button>
+      <h2>How to read this</h2>
+      <div class="modal-sub">A quick guide to the labels and what each number is compared against.</div>
+
+      <h3>The three benchmarks</h3>
+      <dl>
+        <dt>Load</dt><dd>Active trips per active driver. Target ≤ 1.8. Higher means each driver is stretched across more trips — a sign the area needs more drivers.</dd>
+        <dt>%Cancel</dt><dd>Share of requested trips the customer cancelled after requesting. Target ≤ 30%. High cancellation usually follows long waits.</dd>
+        <dt>Wait time</dt><dd>Minutes from request to driver arrival. Target ≤ 12 min. This is the main customer-experience signal — the thing the whole tool is trying to keep low.</dd>
+        <dt>Count / Drivers</dt><dd>Count = number of trips in that 30-min slot (volume). Drivers = distinct driver IDs that got assigned. Neither is good or bad on its own; they give context. Slots under ${ANALYSIS_VOLUME_FLOOR()} trips are flagged “low sample” because one cancellation distorts the rate.</dd>
+      </dl>
+
+      <h3>Understaffed vs. surplus</h3>
+      <dl>
+        <dt>Understaffed</dt><dd>A slot breaching any of the three benchmarks. This is an <em>absolute</em> judgment — over a target is over a target.</dd>
+        <dt>Surplus</dt><dd>A slot that is comfortably under every benchmark <em>and</em> among the most slack citywide. This is <em>relative</em>: being barely fine doesn’t count, only the most over-served slots are surfaced — the best candidates to pull incentive from.</dd>
+        <dt>Priority (in the area scoreboard)</dt><dd>The inverse of Surplus: the most severely understaffed slots citywide, and which areas they fall in. Use it to see which areas are the true top priorities, not just where there are many small breaches.</dd>
+        <dt>Severity</dt><dd>How far a slot is over the benchmarks (shown +), or how slack it is (shown −). Wait is weighted most because it’s the customer-experience goal.</dd>
+      </dl>
+
+      <h3>“Versus recent ___s” — the comparison</h3>
+      <dl>
+        <dt>What it compares</dt><dd>Each 30-min slot today against the <em>median</em> of the same slot on the same weekday over the prior few weeks (e.g. this Monday 17:00 vs. the median of recent Mondays at 17:00). Median is used so a one-off holiday or spike doesn’t skew the baseline.</dd>
+        <dt>Newly understaffed</dt><dd>Fine on recent weeks, breaching today — worth chasing now.</dd>
+        <dt>Getting worse</dt><dd>Already understaffed, and worse today than its recent median.</dd>
+        <dt>Improving</dt><dd>Still understaffed, but better today than its recent median — moving the right way.</dd>
+        <dt>Persistent issue</dt><dd>Understaffed on recent weeks and still today, roughly unchanged — incentives haven’t shifted it; may need a standing change rather than a daily nudge.</dd>
+        <dt>Recovered</dt><dd>Was understaffed on recent weeks, fine today.</dd>
+        <dt>▲ / ▼ deltas</dt><dd>Change versus the recent-weeks median for that stat. For wait/load/cancel, green = better (lower), red = worse (higher). For count, the arrow is neutral — it’s just volume change.</dd>
+      </dl>
+
+      <h3>The recommendation</h3>
+      <dl>
+        <dt>Anchor incentive block</dt><dd>Incentives are assigned as contiguous shift blocks, not single 30-min slots. Each area gets one suggested window to place or strengthen a block over, with the peak (◆) marking where pressure is highest. It’s directional guidance — where a pay bump pays off most — not an exact driver count.</dd>
+        <dt>Reclaim / over-served</dt><dd>A window slack enough to lower the incentive tier and redirect drivers toward the anchor windows.</dd>
+      </dl>
+    </div>`;
+    document.body.appendChild(overlay);
+    const close = () => overlay.remove();
+    document.getElementById("helpClose").addEventListener("click", close);
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+    document.addEventListener("keydown", function esc(e) { if (e.key === "Escape") { close(); document.removeEventListener("keydown", esc); } });
+  }
+  function ANALYSIS_VOLUME_FLOOR() { return (window.Analysis && Analysis.VOLUME_FLOOR) || 15; }
+
   $("logoutBtn").addEventListener("click", doLogout);
   $("runBtn").addEventListener("click", run);
+  $("infoBtn").addEventListener("click", openHelp);
 
   // restore session if present
   if (getToken()) showApp(); else showLogin();
