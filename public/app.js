@@ -8,6 +8,7 @@
   const $ = (id) => document.getElementById(id);
   const TOKEN_KEY = "mb_token";
   const USER_KEY = "mb_user";
+  let deckKeyHandler = null; // current deck keyboard listener, so renders don't stack them
 
   // ---- session ----
   function getToken() { return sessionStorage.getItem(TOKEN_KEY); }
@@ -259,12 +260,15 @@
     const prev = $("deckPrev"), next = $("deckNext");
     if (prev) prev.addEventListener("click", () => go(cur - 1));
     if (next) next.addEventListener("click", () => go(cur + 1));
-    // keyboard arrows
-    document.addEventListener("keydown", (e) => {
+    // keyboard arrows — remove any handler from a previous render so they don't stack
+    // (render() runs again on every analysis; document-level listeners would accumulate).
+    if (deckKeyHandler) document.removeEventListener("keydown", deckKeyHandler);
+    deckKeyHandler = (e) => {
       if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
       if (e.key === "ArrowRight") go(cur + 1);
       else if (e.key === "ArrowLeft") go(cur - 1);
-    });
+    };
+    document.addEventListener("keydown", deckKeyHandler);
     // update active tab on manual scroll
     let scrollTimer;
     track.addEventListener("scroll", () => {
@@ -435,20 +439,24 @@
     return h;
   }
 
-  // compact table of 30-min blocks (time, wait, load, cancel, count, optional vs-median)
+  // compact table of 30-min blocks: each stat shows its value + delta vs prior-week
+  // median inline (no data dropped), plus a severity column (how far over/under).
   function miniBlockTable(list, compare) {
     let h = `<div class="gridwrap"><table><thead><tr>
-      <th class="area">Time</th><th>Wait</th><th>Load</th><th>%Cancel</th><th>Count</th>${compare ? "<th>wait vs med</th>" : ""}
+      <th class="area">Time</th><th>Wait</th><th>Load</th><th>%Cancel</th><th>Count</th><th>Severity</th>
     </tr></thead><tbody>`;
     for (const b of list) {
       const cmp = b.comparison;
+      // severity: positive = over target (bad), shown as +; surplus = under, shown as −slack.
+      const sevVal = b.severity > 0 ? `+${b.severity.toFixed(2)}` : (b.slack > 0 ? `−${b.slack.toFixed(2)}` : "0");
+      const sevCls = b.severity > 0 ? "sev-over" : (b.slack > 0 ? "sev-under" : "");
       h += `<tr>
         <td class="area">${escapeHtml(b.hour)}</td>
-        <td><span class="cell" style="background:${rampColor(b.wait,5,15)}">${fmt.wait(b.wait)}</span></td>
-        <td><span class="cell" style="background:${rampColor(b.load,1,2.3)}">${fmt.load(b.load)}</span></td>
-        <td><span class="cell" style="background:${rampColor(b.cancel,0.1,0.4)}">${fmt.pct(b.cancel)}</span></td>
+        <td><span class="cell" style="background:${rampColor(b.wait,5,15)}">${fmt.wait(b.wait)}</span>${compare && cmp ? deltaSpan(cmp.dWait, true) : ""}</td>
+        <td><span class="cell" style="background:${rampColor(b.load,1,2.3)}">${fmt.load(b.load)}</span>${compare && cmp ? deltaSpan(cmp.dLoad, true) : ""}</td>
+        <td><span class="cell" style="background:${rampColor(b.cancel,0.1,0.4)}">${fmt.pct(b.cancel)}</span>${compare && cmp ? deltaSpan(cmp.dCancel * 100, true) : ""}</td>
         <td>${fmt.int(b.count)}</td>
-        ${compare ? `<td>${cmp ? deltaSpan(cmp.dWait, true) : "—"}</td>` : ""}
+        <td><span class="sev-tag ${sevCls}">${sevVal}</span></td>
       </tr>`;
     }
     h += `</tbody></table></div>`;
