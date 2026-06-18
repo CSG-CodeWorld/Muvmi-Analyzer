@@ -138,6 +138,7 @@
   .delta { font-size: 11.5px; font-family: var(--mono); margin-left: 6px; }
   .delta.up { color: var(--bad); }
   .delta.down { color: var(--good); }
+  .delta.neutral { color: var(--ink-faint); }
 
   .empty { color: var(--ink-faint); font-size: 13px; font-style: italic; padding: 8px 0; }
   /* ---- Day strips (hero) ---- */
@@ -240,6 +241,23 @@
   summary { cursor: pointer; color: var(--ink-dim); font-size: 13px; }
   .foot { color: var(--ink-faint); font-size: 11.5px; margin-top: 40px; border-top: 1px solid var(--line); padding-top: 14px; }
   .hidden { display: none !important; }
+  /* info button + modal */
+  .info-btn { width:30px; height:30px; border-radius:50%; border:1px solid var(--line); background:var(--panel-2);
+    color:var(--ink-dim); font-size:15px; font-style:italic; font-family:Georgia,serif; cursor:pointer; flex:0 0 auto; }
+  .info-btn:hover { border-color:var(--accent); color:var(--ink); }
+  .modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,.6); display:flex; align-items:flex-start;
+    justify-content:center; padding:6vh 16px; z-index:100; overflow-y:auto; }
+  .modal { background:var(--panel); border:1px solid var(--line); border-radius:12px; max-width:680px; width:100%;
+    padding:26px 30px; }
+  .modal h2 { font-size:18px; margin-bottom:4px; }
+  .modal .modal-sub { color:var(--ink-dim); font-size:13px; margin-bottom:20px; }
+  .modal h3 { font-size:14px; margin:20px 0 6px; color:var(--accent); }
+  .modal dl { margin:0; }
+  .modal dt { font-weight:600; font-size:13.5px; margin-top:11px; }
+  .modal dd { margin:2px 0 0; color:var(--ink-dim); font-size:13px; line-height:1.55; }
+  .modal .modal-close { float:right; background:transparent; border:1px solid var(--line); color:var(--ink-dim);
+    border-radius:6px; padding:5px 11px; cursor:pointer; font:inherit; font-size:13px; }
+  .modal .modal-close:hover { border-color:var(--accent); color:var(--ink); }
 </style>
 </head>
 <body>
@@ -266,6 +284,7 @@
       <span class="sub">card 7441 · load / %cancel / wait</span>
       <span class="spacer"></span>
       <span class="who" id="who"></span>
+      <button class="info-btn" id="infoBtn" title="What do these labels mean?" aria-label="Help">i</button>
       <button class="btn ghost small" id="logoutBtn">Log out</button>
     </header>
 
