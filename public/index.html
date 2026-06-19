@@ -229,6 +229,21 @@
   .sev-tag { font-family:var(--mono); font-size:11.5px; padding:1px 6px; border-radius:4px; }
   .sev-tag.sev-over { color:var(--bad); }
   .sev-tag.sev-under { color:var(--good); }
+  /* day chart (replaces strip) */
+  .day-chart { background:var(--panel-2); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  .chart-bar { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; gap:10px; flex-wrap:wrap; }
+  .chart-status { font-size:12.5px; font-weight:600; }
+  .chart-tabs { display:flex; gap:6px; }
+  .chart-tab { font:inherit; font-size:12px; cursor:pointer; border:1px solid var(--line); background:var(--panel);
+    color:var(--ink-dim); padding:5px 12px; border-radius:7px; }
+  .chart-tab:hover { border-color:var(--accent); color:var(--ink); }
+  .chart-tab.active { background:var(--ink); border-color:var(--ink); color:var(--bg); font-weight:600; }
+  .chart-legend { display:flex; gap:18px; flex-wrap:wrap; font-size:11.5px; color:var(--ink-dim); margin-top:8px; }
+  .chart-legend span { display:inline-flex; align-items:center; gap:5px; }
+  .lg-line { width:16px; display:inline-block; }
+  .lg-line.today { border-top:2.6px solid var(--ink); }
+  .lg-line.normal { border-top:2px dashed var(--ink-faint); }
+  .lg-fill { width:12px; height:10px; border-radius:2px; background:rgba(214,57,31,0.55); display:inline-block; }
   .gridwrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); }
   table { border-collapse: collapse; font-size: 12.5px; width: 100%; }
   th, td { padding: 5px 9px; text-align: right; white-space: nowrap; font-family: var(--mono); }
