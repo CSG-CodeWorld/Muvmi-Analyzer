@@ -10,6 +10,16 @@
   const USER_KEY = "mb_user";
   let deckKeyHandler = null; // current deck keyboard listener, so renders don't stack them
 
+  // Toggle which metric chart shows for an area (called from inline onclick in the deck).
+  window.__chartTab = function (areaId, metric) {
+    document.querySelectorAll(`.chart-pane[data-chart="${areaId}"]`).forEach((p) => {
+      p.style.display = p.dataset.metric === metric ? "" : "none";
+    });
+    document.querySelectorAll(`.chart-tab[data-chart="${areaId}"]`).forEach((t) => {
+      t.classList.toggle("active", t.dataset.metric === metric);
+    });
+  };
+
   // ---- session ----
   function getToken() { return sessionStorage.getItem(TOKEN_KEY); }
   function setSession(token, user) { sessionStorage.setItem(TOKEN_KEY, token); if (user) sessionStorage.setItem(USER_KEY, user); }
@@ -394,8 +404,7 @@
       </div>
 
       <h3 class="block-title">The day</h3>
-      ${stripLegend()}
-      ${stripBars(strip)}
+      ${dayChartBlock(strip, areaBuckets, opts)}
 
       <h3 class="block-title">Recommendation</h3>
       ${stripRecs(strip)}`;
@@ -511,6 +520,114 @@
   }
 
   function shortAreaName(area) { return String(area).split(" - ")[0]; }
+
+  // ---- Day chart: paints severity. Replaces the old colored strip on area slides. ----
+  // Three metrics (wait/load/cancel) toggled by tabs. Each chart fills the gap above the
+  // benchmark in red, depth = how far over, so the worst stretches read boldest. A faint
+  // dashed line shows a normal recent day (prior-weeks median). No reading required to
+  // see where and how bad the trouble is.
+  const CHART_METRICS = {
+    wait:   { label: "Wait time", pct: false, target: () => Analysis.TARGETS.wait,   domain: [0, 26], key: "wait",   med: "medWait" },
+    load:   { label: "Load",      pct: false, target: () => Analysis.TARGETS.load,   domain: [0, 3],  key: "load",   med: "medLoad" },
+    cancel: { label: "Cancellations", pct: true, target: () => Analysis.TARGETS.cancel, domain: [0, 0.6], key: "cancel", med: "medCancel" },
+  };
+
+  function dayChartBlock(strip, areaBuckets, opts) {
+    const sorted = [...areaBuckets].sort((a, b) => (a.hour < b.hour ? -1 : 1));
+    const areaId = "ch_" + Math.abs(hashStr(strip.area));
+    const order = ["wait", "load", "cancel"];
+    // overall status from understaffed-bucket count (wait drives, but any breach counts)
+    const breachN = sorted.filter((b) => !b.lowSample && b.breaches.length > 0).length;
+    const status = breachN === 0 ? { t: "Healthy", c: "var(--good)" }
+                 : breachN <= 4 ? { t: "Minor strain", c: "var(--warn)" }
+                 : { t: "Understaffed", c: "var(--bad)" };
+
+    let tabs = "";
+    order.forEach((k, i) => {
+      tabs += `<button class="chart-tab${i === 0 ? " active" : ""}" data-chart="${areaId}" data-metric="${k}" onclick="window.__chartTab('${areaId}','${k}')">${CHART_METRICS[k].label}</button>`;
+    });
+    let charts = "";
+    order.forEach((k, i) => {
+      charts += `<div class="chart-pane" data-chart="${areaId}" data-metric="${k}" style="${i === 0 ? "" : "display:none"}">${severityChart(sorted, CHART_METRICS[k], opts.compare)}</div>`;
+    });
+
+    return `<div class="day-chart">
+      <div class="chart-bar">
+        <span class="chart-status" style="color:${status.c}">${status.t}</span>
+        <div class="chart-tabs">${tabs}</div>
+      </div>
+      ${charts}
+      <div class="chart-legend">
+        <span><span class="lg-line today"></span> today</span>
+        <span><span class="lg-line normal"></span> normal day</span>
+        <span><span class="lg-fill"></span> over benchmark (depth = severity)</span>
+      </div>
+    </div>`;
+  }
+
+  function severityChart(sorted, def, compare) {
+    const W = 560, H = 280, padL = 46, padR = 16, padT = 18, padB = 28;
+    const iw = W - padL - padR, ih = H - padT - padB;
+    const n = sorted.length || 1;
+    const [d0, d1] = def.domain;
+    const target = def.target();
+    const x = (i) => padL + (i / (n - 1)) * iw;
+    const clamp = (v) => Math.min(Math.max(v, d0), d1);
+    const y = (v) => padT + ih - ((clamp(v) - d0) / (d1 - d0)) * ih;
+    const today = sorted.map((b) => b[def.key]);
+    const med = sorted.map((b) => (compare && b.comparison ? b.comparison[def.med] : null));
+    const tgtY = y(target);
+    const fmt = (v) => def.pct ? Math.round(v * 100) + "%" : (Number.isInteger(v) ? v : (Math.round(v * 10) / 10));
+    const lineOf = (arr) => {
+      let started = false, d = "";
+      arr.forEach((v, i) => { if (v == null) return; d += (started ? "L" : "M") + x(i).toFixed(1) + "," + y(v).toFixed(1); started = true; });
+      return d;
+    };
+
+    // worst over-amount for scaling fill opacity
+    const worst = Math.max(0.001, ...today.map((v) => (v - target) / (d1 - target)));
+    // red fill segments where today is above target
+    let segs = "";
+    for (let i = 0; i < n - 1; i++) {
+      const a = today[i], b = today[i + 1];
+      if (a > target || b > target) {
+        const xa = x(i), xb = x(i + 1);
+        let xs = xa, xe = xb, ya = a, yb = b;
+        if (a <= target) { const f = (target - a) / (b - a); xs = xa + (xb - xa) * f; ya = target; }
+        if (b <= target) { const f = (target - a) / (b - a); xe = xa + (xb - xa) * f; yb = target; }
+        const over = (Math.max(a, b) - target) / (d1 - target);
+        const op = (0.3 + 0.6 * Math.min(over / worst, 1)).toFixed(2);
+        segs += `<path d="M${xs.toFixed(1)},${tgtY} L${xs.toFixed(1)},${y(ya).toFixed(1)} L${xe.toFixed(1)},${y(yb).toFixed(1)} L${xe.toFixed(1)},${tgtY} Z" fill="#d6391f" fill-opacity="${op}"/>`;
+      }
+    }
+    // faint green floor where healthy
+    const belowPts = today.map((v, i) => "L" + x(i).toFixed(1) + "," + Math.max(y(v), tgtY).toFixed(1)).join(" ");
+    const belowFill = `<path d="M${x(0)},${tgtY} ${belowPts} L${x(n - 1)},${tgtY} Z" fill="#2f9e44" fill-opacity="0.06"/>`;
+
+    let xt = "";
+    for (let i = 0; i < n; i += 4) xt += `<text x="${x(i)}" y="${H - 8}" fill="var(--ink-faint)" font-size="10" text-anchor="middle">${escapeHtml(sorted[i].hour)}</text>`;
+    let yt = "";
+    [d0, target, d1].forEach((tk) => { yt += `<text x="${padL - 8}" y="${y(tk) + 3}" fill="var(--ink-faint)" font-size="10" text-anchor="end">${fmt(tk)}</text>`; });
+
+    // peak callout
+    let peak = "";
+    const pv = Math.max(...today), pi = today.indexOf(pv);
+    if (pv > target) {
+      peak = `<circle cx="${x(pi).toFixed(1)}" cy="${y(pv).toFixed(1)}" r="4" fill="#d6391f"/>
+        <text x="${x(pi).toFixed(1)}" y="${(y(pv) - 9).toFixed(1)}" fill="#c0392b" font-size="11" font-weight="500" text-anchor="middle">${fmt(pv)}</text>`;
+    }
+
+    return `<svg viewBox="0 0 ${W} ${H}" style="display:block;width:100%;height:auto" role="img" aria-label="${escapeHtml(def.label)} across the day versus benchmark">
+      ${belowFill}${segs}
+      <line x1="${padL}" y1="${tgtY}" x2="${W - padR}" y2="${tgtY}" stroke="#c0392b" stroke-width="1.4" stroke-dasharray="2 3"/>
+      <text x="${W - padR}" y="${tgtY - 5}" fill="#c0392b" font-size="10" text-anchor="end">benchmark ${fmt(target)}</text>
+      ${compare ? `<path d="${lineOf(med)}" fill="none" stroke="var(--ink-faint)" stroke-width="1.5" stroke-dasharray="4 4"/>` : ""}
+      <path d="${lineOf(today)}" fill="none" stroke="var(--ink)" stroke-width="2.6" stroke-linejoin="round"/>
+      ${peak}${yt}${xt}
+    </svg>`;
+  }
+
+  function hashStr(s) { let h = 0; for (let i = 0; i < s.length; i++) { h = (h * 31 + s.charCodeAt(i)) | 0; } return h; }
 
   // strip bars only (no head/recs) — used inside the area slide
   function stripBars(strip) {
