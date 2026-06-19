@@ -244,6 +244,10 @@
   .lg-line.today { border-top:2.6px solid var(--ink); }
   .lg-line.normal { border-top:2px dashed var(--ink-faint); }
   .lg-fill { width:12px; height:10px; border-radius:2px; background:rgba(214,57,31,0.55); display:inline-block; }
+  .chart-tip { position:fixed; z-index:200; pointer-events:none; background:var(--panel); color:var(--ink);
+    border:1px solid var(--line); border-left:3px solid var(--good); border-radius:6px; padding:7px 11px;
+    font-size:12px; font-family:var(--mono); max-width:330px; line-height:1.5;
+    box-shadow:0 4px 16px rgba(0,0,0,0.4); }
   .gridwrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); }
   table { border-collapse: collapse; font-size: 12.5px; width: 100%; }
   th, td { padding: 5px 9px; text-align: right; white-space: nowrap; font-family: var(--mono); }
