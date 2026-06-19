@@ -20,6 +20,41 @@
     });
   };
 
+  // Chart point tooltip — one shared element, delegated hover on any [data-tip] target.
+  (function setupChartTip() {
+    let tip = null;
+    const ensure = () => {
+      if (!tip) {
+        tip = document.createElement("div");
+        tip.className = "chart-tip";
+        tip.style.display = "none";
+        document.body.appendChild(tip);
+      }
+      return tip;
+    };
+    document.addEventListener("mouseover", (e) => {
+      const t = e.target.closest && e.target.closest("[data-tip]");
+      if (!t) return;
+      const el = ensure();
+      el.textContent = t.getAttribute("data-tip");
+      el.style.borderLeftColor = t.getAttribute("data-over") === "1" ? "#d6391f" : "var(--good)";
+      el.style.display = "block";
+    });
+    document.addEventListener("mousemove", (e) => {
+      if (!tip || tip.style.display === "none") return;
+      const pad = 14;
+      let left = e.clientX + pad, top = e.clientY + pad;
+      const r = tip.getBoundingClientRect();
+      if (left + r.width > window.innerWidth - 8) left = e.clientX - r.width - pad;
+      if (top + r.height > window.innerHeight - 8) top = e.clientY - r.height - pad;
+      tip.style.left = left + "px"; tip.style.top = top + "px";
+    });
+    document.addEventListener("mouseout", (e) => {
+      const t = e.target.closest && e.target.closest("[data-tip]");
+      if (t && tip) tip.style.display = "none";
+    });
+  })();
+
   // ---- session ----
   function getToken() { return sessionStorage.getItem(TOKEN_KEY); }
   function setSession(token, user) { sessionStorage.setItem(TOKEN_KEY, token); if (user) sessionStorage.setItem(USER_KEY, user); }
@@ -617,13 +652,25 @@
         <text x="${x(pi).toFixed(1)}" y="${(y(pv) - 9).toFixed(1)}" fill="#c0392b" font-size="11" font-weight="500" text-anchor="middle">${fmt(pv)}</text>`;
     }
 
+    // plotted points on today's line + invisible wide hover targets carrying the slot's
+    // real numbers, so each 30-min point can be inspected on hover.
+    let pts = "", hits = "";
+    sorted.forEach((b, i) => {
+      const over = today[i] > target;
+      const cx = x(i).toFixed(1), cy = y(today[i]).toFixed(1);
+      pts += `<circle cx="${cx}" cy="${cy}" r="${i === pi && pv > target ? 0 : 2.3}" fill="${over ? "#d6391f" : "var(--ink)"}" stroke="var(--panel)" stroke-width="0.5"/>`;
+      const medTxt = (compare && b.comparison) ? fmt(b.comparison[def.med]) : "—";
+      const tip = `${b.hour}\u2002·\u2002${def.label}: ${fmt(today[i])}\u2002·\u2002benchmark ${fmt(target)}\u2002·\u2002normal ${medTxt}\u2002·\u2002${b.count} trips, ${b.drivers} drivers`;
+      hits += `<circle cx="${cx}" cy="${cy}" r="12" fill="transparent" style="cursor:pointer" data-tip="${escapeHtml(tip)}" data-over="${over ? 1 : 0}"/>`;
+    });
+
     return `<svg viewBox="0 0 ${W} ${H}" style="display:block;width:100%;height:auto" role="img" aria-label="${escapeHtml(def.label)} across the day versus benchmark">
       ${belowFill}${segs}
       <line x1="${padL}" y1="${tgtY}" x2="${W - padR}" y2="${tgtY}" stroke="#c0392b" stroke-width="1.4" stroke-dasharray="2 3"/>
       <text x="${W - padR}" y="${tgtY - 5}" fill="#c0392b" font-size="10" text-anchor="end">benchmark ${fmt(target)}</text>
       ${compare ? `<path d="${lineOf(med)}" fill="none" stroke="var(--ink-faint)" stroke-width="1.5" stroke-dasharray="4 4"/>` : ""}
       <path d="${lineOf(today)}" fill="none" stroke="var(--ink)" stroke-width="2.6" stroke-linejoin="round"/>
-      ${peak}${yt}${xt}
+      ${peak}${pts}${yt}${xt}${hits}
     </svg>`;
   }
 
