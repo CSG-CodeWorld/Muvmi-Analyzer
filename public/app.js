@@ -604,13 +604,35 @@
     const W = 560, H = 280, padL = 46, padR = 16, padT = 18, padB = 28;
     const iw = W - padL - padR, ih = H - padT - padB;
     const n = sorted.length || 1;
-    const [d0, d1] = def.domain;
     const target = def.target();
+    const today = sorted.map((b) => b[def.key]);
+    const med = sorted.map((b) => (compare && b.comparison ? b.comparison[def.med] : null));
+
+    // Dynamic y-axis: fit the actual data instead of a fixed cap (which clipped high
+    // outliers and flattened calm days). Always keep the benchmark on-scale so "are we
+    // near the line" stays readable, and keep a little headroom above the peak.
+    const vals = today.concat(med.filter((v) => v != null));
+    let dataMax = Math.max(target, ...vals);
+    let dataMin = Math.min(target, ...vals, 0); // include 0 so the floor stays grounded
+    // headroom above the highest point, and a touch below the lowest
+    let hi = dataMax + (dataMax - dataMin) * 0.12;
+    let lo = Math.max(0, dataMin - (dataMax - dataMin) * 0.05);
+    // round to "nice" bounds for clean axis labels
+    const niceStep = (range) => {
+      const raw = range / 3, mag = Math.pow(10, Math.floor(Math.log10(raw || 1)));
+      const norm = raw / mag;
+      const step = norm >= 5 ? 5 : norm >= 2 ? 2 : norm >= 1 ? 1 : 0.5;
+      return step * mag;
+    };
+    const step = niceStep(hi - lo) || 1;
+    hi = Math.ceil(hi / step) * step;
+    lo = def.pct ? 0 : Math.floor(lo / step) * step; // cancel always floors at 0
+    if (hi <= lo) hi = lo + step;
+    const d0 = lo, d1 = hi;
+
     const x = (i) => padL + (i / (n - 1)) * iw;
     const clamp = (v) => Math.min(Math.max(v, d0), d1);
     const y = (v) => padT + ih - ((clamp(v) - d0) / (d1 - d0)) * ih;
-    const today = sorted.map((b) => b[def.key]);
-    const med = sorted.map((b) => (compare && b.comparison ? b.comparison[def.med] : null));
     const tgtY = y(target);
     const fmt = (v) => def.pct ? Math.round(v * 100) + "%" : (Number.isInteger(v) ? v : (Math.round(v * 10) / 10));
     const lineOf = (arr) => {
