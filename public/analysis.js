@@ -304,8 +304,8 @@
       try { pb = toBuckets(pull.cols, pull.rows); } catch { continue; }
       for (const b of pb) {
         const k = b.area + "|" + b.hour;
-        const e = (priorBucketsByKey[k] = priorBucketsByKey[k] || { wait: [], load: [], cancel: [], count: [] });
-        e.wait.push(b.wait); e.load.push(b.load); e.cancel.push(b.cancel); e.count.push(b.count);
+        const e = (priorBucketsByKey[k] = priorBucketsByKey[k] || { wait: [], load: [], cancel: [], count: [], drivers: [] });
+        e.wait.push(b.wait); e.load.push(b.load); e.cancel.push(b.cancel); e.count.push(b.count); e.drivers.push(b.drivers);
       }
     }
 
@@ -323,14 +323,15 @@
       const k = b.area + "|" + b.hour;
       const e = priorBucketsByKey[k];
       if (!e) { b.comparison = null; continue; }
-      const medWait = median(e.wait), medLoad = median(e.load), medCancel = median(e.cancel), medCount = median(e.count);
+      const medWait = median(e.wait), medLoad = median(e.load), medCancel = median(e.cancel), medCount = median(e.count), medDrivers = median(e.drivers);
       b.comparison = {
         weeks: e.wait.length,
-        medWait, medLoad, medCancel, medCount,
+        medWait, medLoad, medCancel, medCount, medDrivers,
         dWait: b.wait - (medWait ?? b.wait),
         dLoad: b.load - (medLoad ?? b.load),
         dCancel: b.cancel - (medCancel ?? b.cancel),
         dCount: b.count - (medCount ?? b.count),
+        dDrivers: b.drivers - (medDrivers ?? b.drivers),
       };
 
       const wasProblem = breachesVals(medWait, medLoad, medCancel).length > 0;
@@ -433,7 +434,114 @@
     return 0.5 * loadUnder + 0.3 * waitUnder + 0.2 * cancelUnder;
   }
 
-  const api = { analyzeDay, attachComparison, toBuckets, TARGETS, VOLUME_FLOOR, COL };
+  // ----------------------------------------------------------------------------
+  // interpretArea — a plain-language read of what wait / load / cancel are doing
+  // TOGETHER for one area, plus the likeliest explanation. This is a HEURISTIC,
+  // not a model: it counts how often each of the three breaches across the day's
+  // real-volume slots, looks at whether they co-occur, runs a couple of cross-
+  // checks (e.g. high wait while load is LOW = positioning, not headcount), and
+  // maps that signature to a probable cause. Phrasing stays hedged on purpose
+  // ("consistent with", "likely") — it's a prompt for the supervisor's judgment,
+  // not a verdict. Returns { tone: 'good'|'warn'|'bad'|'flat', headline, detail }.
+  // ----------------------------------------------------------------------------
+  function interpretArea(areaBuckets) {
+    const T = TARGETS;
+    const act = (areaBuckets || []).filter((b) => !b.lowSample);
+    const vol = act.filter((b) => b.count >= VOLUME_FLOOR); // adequate volume only
+    if (vol.length < 3) {
+      return { tone: "flat", headline: "Not enough volume to read",
+        detail: "Too few adequate-volume slots today to call a pattern with any confidence. Treat the chart as indicative only." };
+    }
+    const brk = (b) => (b.breaches && b.breaches.length ? b.breaches : breaches(b));
+    const breaching = vol.filter((b) => brk(b).length > 0);
+
+    if (!breaching.length) {
+      return { tone: "good", headline: "Supply kept up all day",
+        detail: "No real-volume slot crossed a benchmark. Wait, load, and cancellations all stayed in range together — drivers matched demand across the day. No incentive change indicated." };
+    }
+
+    // How many breaching slots involve each metric.
+    const wB = breaching.filter((b) => b.wait > T.wait);
+    const lB = breaching.filter((b) => b.load > T.load);
+    const cB = breaching.filter((b) => b.cancel > T.cancel);
+    const sig = Math.max(2, Math.ceil(breaching.length * 0.4)); // "recurring part of the pattern"
+    const waitHot = wB.length >= sig;
+    const loadHot = lB.length >= sig;
+    const cancelHot = cB.length >= sig;
+
+    // Structural cross-check: are the long waits happening while load is actually LOW?
+    // Drivers present but not busy => supply is mispositioned, not too few drivers.
+    const loadInWait = wB.length ? median(wB.map((b) => b.load)) : null;
+    const structural = waitHot && loadInWait != null && loadInWait < T.load * 0.8;
+
+    // Temporal shape: tight window or spread across the day?
+    const hours = breaching.map((b) => b.hour).sort();
+    const span = hourSpanFraction(vol, breaching);
+    const concentrated = span <= 0.5;
+    const whenTxt = concentrated && hours.length
+      ? `concentrated around ${hours[0]}–${addHalfHour(hours[hours.length - 1])}`
+      : "spread across much of the day";
+    const standing = concentrated ? ""
+      : " Because it recurs across much of the day, this reads more like a standing staffing gap than a one-window nudge.";
+
+    // Optional week-over-week flavor, only if comparison is attached.
+    let wow = "";
+    const worse = breaching.filter((b) => b.transition === "worse" || b.transition === "new").length;
+    const better = breaching.filter((b) => b.transition === "better" || b.transition === "fixed").length;
+    if (worse || better) {
+      if (worse > better * 1.5) wow = " It's running worse than recent same-weekdays.";
+      else if (better > worse * 1.5) wow = " It's milder than recent same-weekdays.";
+      else wow = " Broadly in line with recent same-weekdays.";
+    }
+
+    const peak = breaching.reduce((m, b) => (b.severity > m.severity ? b : m), breaching[0]);
+
+    let tone = "warn", headline = "", detail = "";
+
+    if (waitHot && loadHot && cancelHot) {
+      tone = "bad";
+      headline = "Classic understaffing — all three move together";
+      detail = `Wait, load, and cancellations are all over benchmark in the same slots (${whenTxt}). When the three rise together it's the signature of a real driver shortage: too few drivers, so each is stretched (load), riders wait (wait), and some give up (cancel). This is exactly what an incentive block targets — anchor drivers over the peak around ${peak.hour}.${standing}${wow}`;
+    } else if (waitHot && loadHot && !cancelHot) {
+      tone = "bad";
+      headline = "Stretched but holding";
+      detail = `Load and wait are both over benchmark (${whenTxt}) while cancellations are still in range. Drivers are busy and pickups are slow, but riders haven't started bailing yet. It's real supply pressure caught early — adding drivers now heads off the cancellations that usually follow.${standing}${wow}`;
+    } else if (structural && (cancelHot || waitHot)) {
+      tone = "warn";
+      headline = "Looks like positioning, not headcount";
+      detail = `Waits${cancelHot ? " and cancellations are" : " are"} over benchmark, but load is low in those same slots — drivers aren't actually busy. That points away from "too few drivers" and toward supply being in the wrong place or time: idle or dead-heading drivers, or demand clustered in a sub-area they aren't sitting in. Paying drivers to simply show up may not move it; worth checking where they're positioned before placing a block.${standing}${wow}`;
+    } else if (cancelHot && !waitHot && !loadHot) {
+      tone = "warn";
+      headline = "Cancellations without strain";
+      detail = `Cancellations are up but wait and load are both fine (${whenTxt}). When riders drop off without long waits or busy drivers, the cause usually isn't supply — think pricing or app friction, a weather front, or just noise on a thin slot. A driver incentive probably won't fix this; worth checking conditions and the booking funnel first.${wow}`;
+    } else if (loadHot && !waitHot && !cancelHot) {
+      tone = "good";
+      headline = "Busy but coping";
+      detail = `Load is above benchmark but waits and cancellations are both in range — drivers are running near-full and still keeping service tight. That's efficient utilization, not a problem. Adding incentive here risks over-supplying a window that's already working.${wow}`;
+    } else if (waitHot && !loadHot && !cancelHot) {
+      tone = "warn";
+      headline = "Slow arrivals, no fallout";
+      detail = `Waits run over benchmark but load and cancellations are fine (${whenTxt}) — slow pickups without drivers being overloaded or riders giving up. Often distance or traffic rather than headcount. Low priority; worth watching more than acting on.${wow}`;
+    } else {
+      tone = "warn";
+      const which = [waitHot ? "wait" : null, loadHot ? "load" : null, cancelHot ? "cancellations" : null].filter(Boolean);
+      headline = "Mixed picture";
+      detail = `The breaches don't fall into one clean pattern${which.length ? ` — ${which.join(" and ")} ${which.length > 1 ? "lead" : "leads"}` : ""} (${whenTxt}). Worst slot is ${peak.hour}. Check the per-metric tabs above to see which one is really driving it before committing to a block.${standing}${wow}`;
+    }
+
+    return { tone, headline, detail };
+  }
+
+  // Fraction of the operating day (0..1) that the breaching slots span end-to-end.
+  function hourSpanFraction(allVol, breaching) {
+    const toMin = (h) => { const p = String(h).split(":").map(Number); return p[0] * 60 + (p[1] || 0); };
+    const allH = allVol.map((b) => toMin(b.hour));
+    const dayMin = (Math.max(...allH) - Math.min(...allH)) || 1;
+    const bH = breaching.map((b) => toMin(b.hour));
+    return (Math.max(...bH) - Math.min(...bH)) / dayMin;
+  }
+
+  const api = { analyzeDay, attachComparison, interpretArea, toBuckets, TARGETS, VOLUME_FLOOR, COL };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.Analysis = api;
 })(typeof window !== "undefined" ? window : globalThis);
