@@ -441,6 +441,9 @@
       <h3 class="block-title">The day</h3>
       ${dayChartBlock(strip, areaBuckets, opts)}
 
+      <h3 class="block-title">The three together</h3>
+      ${relationalBlock(areaBuckets, opts)}
+
       <h3 class="block-title">Recommendation</h3>
       ${stripRecs(strip)}`;
 
@@ -567,10 +570,48 @@
     cancel: { label: "Cancellations", pct: true, target: () => Analysis.TARGETS.cancel, domain: [0, 0.6], key: "cancel", med: "medCancel" },
   };
 
+  // Volume metrics have NO benchmark (more rides / more drivers is neither good nor
+  // bad on its own), so they render as plain today-vs-normal curves, not severity paint.
+  const VOLUME_METRICS = {
+    rides:   { label: "Rides",   key: "count",   med: "medCount",   ctxKey: "drivers", ctxLabel: "drivers" },
+    drivers: { label: "Drivers", key: "drivers", med: "medDrivers", ctxKey: "count",   ctxLabel: "trips" },
+  };
+
+  // The three benchmarked metrics, normalized to "× of benchmark" for the relational chart.
+  const REL_METRICS = [
+    { key: "wait",   label: "Wait",   color: "#4a9eff", target: () => Analysis.TARGETS.wait },
+    { key: "load",   label: "Load",   color: "#d9a441", target: () => Analysis.TARGETS.load },
+    { key: "cancel", label: "Cancel", color: "#e06ec9", target: () => Analysis.TARGETS.cancel },
+  ];
+
+  // Shared "nice bounds" axis math (used by the volume + relational charts). The
+  // severity chart keeps its own inline copy so its tuned behavior stays untouched.
+  function niceAxis(vals, floorZero) {
+    let dataMax = Math.max(...vals);
+    let dataMin = floorZero ? 0 : Math.min(...vals);
+    if (!isFinite(dataMax)) dataMax = 1;
+    if (!isFinite(dataMin)) dataMin = 0;
+    const range0 = dataMax - dataMin;
+    let hi = dataMax + range0 * 0.12;
+    let lo = floorZero ? 0 : Math.max(0, dataMin - range0 * 0.05);
+    const niceStep = (range) => {
+      const raw = range / 3, mag = Math.pow(10, Math.floor(Math.log10(raw || 1)));
+      const norm = raw / mag;
+      const step = norm >= 5 ? 5 : norm >= 2 ? 2 : norm >= 1 ? 1 : 0.5;
+      return step * mag;
+    };
+    const step = niceStep(hi - lo) || 1;
+    hi = Math.ceil(hi / step) * step;
+    lo = floorZero ? 0 : Math.floor(lo / step) * step;
+    if (hi <= lo) hi = lo + step;
+    return { lo, hi, step };
+  }
+
   function dayChartBlock(strip, areaBuckets, opts) {
     const sorted = [...areaBuckets].sort((a, b) => (a.hour < b.hour ? -1 : 1));
     const areaId = "ch_" + Math.abs(hashStr(strip.area));
-    const order = ["wait", "load", "cancel"];
+    const order = ["wait", "load", "cancel", "rides", "drivers"];
+    const labelOf = (k) => (CHART_METRICS[k] ? CHART_METRICS[k].label : VOLUME_METRICS[k].label);
     // overall status from understaffed-bucket count (wait drives, but any breach counts)
     const breachN = sorted.filter((b) => !b.lowSample && b.breaches.length > 0).length;
     const status = breachN === 0 ? { t: "Healthy", c: "var(--good)" }
@@ -579,11 +620,14 @@
 
     let tabs = "";
     order.forEach((k, i) => {
-      tabs += `<button class="chart-tab${i === 0 ? " active" : ""}" data-chart="${areaId}" data-metric="${k}" onclick="window.__chartTab('${areaId}','${k}')">${CHART_METRICS[k].label}</button>`;
+      tabs += `<button class="chart-tab${i === 0 ? " active" : ""}" data-chart="${areaId}" data-metric="${k}" onclick="window.__chartTab('${areaId}','${k}')">${labelOf(k)}</button>`;
     });
     let charts = "";
     order.forEach((k, i) => {
-      charts += `<div class="chart-pane" data-chart="${areaId}" data-metric="${k}" style="${i === 0 ? "" : "display:none"}">${severityChart(sorted, CHART_METRICS[k], opts.compare)}</div>`;
+      const body = CHART_METRICS[k]
+        ? severityChart(sorted, CHART_METRICS[k], opts.compare)
+        : volumeChart(sorted, VOLUME_METRICS[k], opts.compare);
+      charts += `<div class="chart-pane" data-chart="${areaId}" data-metric="${k}" style="${i === 0 ? "" : "display:none"}">${body}</div>`;
     });
 
     return `<div class="day-chart">
@@ -595,7 +639,7 @@
       <div class="chart-legend">
         <span><span class="lg-line today"></span> today</span>
         <span><span class="lg-line normal"></span> normal day</span>
-        <span><span class="lg-fill"></span> over benchmark (depth = severity)</span>
+        <span><span class="lg-fill"></span> over benchmark (wait / load / cancel tabs)</span>
       </div>
     </div>`;
   }
@@ -697,6 +741,141 @@
   }
 
   function hashStr(s) { let h = 0; for (let i = 0; i < s.length; i++) { h = (h * 31 + s.charCodeAt(i)) | 0; } return h; }
+
+  // ---- Volume chart: plain today-vs-normal curve for rides / drivers. ----
+  // No benchmark (volume isn't good or bad on its own). A subtle tint fills the gap
+  // between today and the normal-day median so you can see at a glance whether the
+  // day ran above (blue) or below (grey) typical, without reading the numbers.
+  function volumeChart(sorted, def, compare) {
+    const W = 560, H = 280, padL = 46, padR = 16, padT = 18, padB = 28;
+    const iw = W - padL - padR, ih = H - padT - padB;
+    const n = sorted.length || 1;
+    const today = sorted.map((b) => b[def.key]);
+    const med = sorted.map((b) => (compare && b.comparison ? b.comparison[def.med] : null));
+    const vals = today.concat(med.filter((v) => v != null));
+    const { lo, hi } = niceAxis(vals.length ? vals : [0, 1], true);
+    const d0 = lo, d1 = hi || 1;
+    const x = (i) => padL + (i / (n - 1)) * iw;
+    const y = (v) => padT + ih - ((Math.min(Math.max(v, d0), d1) - d0) / (d1 - d0)) * ih;
+    const lineOf = (arr) => { let s = false, d = ""; arr.forEach((v, i) => { if (v == null) return; d += (s ? "L" : "M") + x(i).toFixed(1) + "," + y(v).toFixed(1); s = true; }); return d; };
+
+    // deviation fill between today and normal, tinted by direction
+    let dev = "";
+    if (compare) {
+      for (let i = 0; i < n - 1; i++) {
+        const a0 = today[i], a1 = today[i + 1], m0 = med[i], m1 = med[i + 1];
+        if (m0 == null || m1 == null) continue;
+        const above = (a0 + a1) / 2 >= (m0 + m1) / 2;
+        const col = above ? "#4a9eff" : "#5c6772";
+        dev += `<path d="M${x(i).toFixed(1)},${y(a0).toFixed(1)} L${x(i + 1).toFixed(1)},${y(a1).toFixed(1)} L${x(i + 1).toFixed(1)},${y(m1).toFixed(1)} L${x(i).toFixed(1)},${y(m0).toFixed(1)} Z" fill="${col}" fill-opacity="0.10"/>`;
+      }
+    }
+
+    const fmtV = (v) => Math.round(v).toLocaleString();
+    let yt = "";
+    [d0, (d0 + d1) / 2, d1].forEach((tk) => { yt += `<text x="${padL - 8}" y="${y(tk) + 3}" fill="var(--ink-faint)" font-size="10" text-anchor="end">${fmtV(tk)}</text>`; });
+    let xt = "";
+    for (let i = 0; i < n; i += 4) xt += `<text x="${x(i)}" y="${H - 8}" fill="var(--ink-faint)" font-size="10" text-anchor="middle">${escapeHtml(sorted[i].hour)}</text>`;
+
+    let pts = "", hits = "";
+    sorted.forEach((b, i) => {
+      const cx = x(i).toFixed(1), cy = y(today[i]).toFixed(1);
+      pts += `<circle cx="${cx}" cy="${cy}" r="2.3" fill="var(--ink)" stroke="var(--panel)" stroke-width="0.5"/>`;
+      const medTxt = (compare && b.comparison && b.comparison[def.med] != null) ? fmtV(b.comparison[def.med]) : "—";
+      const ctxVal = b[def.ctxKey];
+      const tip = `${b.hour}\u2002·\u2002${def.label}: ${fmtV(today[i])}\u2002·\u2002normal ${medTxt}\u2002·\u2002${fmtV(ctxVal)} ${def.ctxLabel}`;
+      hits += `<circle cx="${cx}" cy="${cy}" r="12" fill="transparent" style="cursor:pointer" data-tip="${escapeHtml(tip)}" data-over="0"/>`;
+    });
+
+    return `<svg viewBox="0 0 ${W} ${H}" style="display:block;width:100%;height:auto" role="img" aria-label="${escapeHtml(def.label)} across the day">
+      ${dev}
+      ${compare ? `<path d="${lineOf(med)}" fill="none" stroke="var(--ink-faint)" stroke-width="1.5" stroke-dasharray="4 4"/>` : ""}
+      <path d="${lineOf(today)}" fill="none" stroke="var(--ink)" stroke-width="2.4" stroke-linejoin="round"/>
+      ${pts}${yt}${xt}${hits}
+    </svg>`;
+  }
+
+  // ---- Relational chart: all three benchmarked metrics on ONE shared scale. ----
+  // Each metric is divided by its own target, so wait (min), load (ratio) and cancel
+  // (%) collapse onto a single "× of benchmark" axis. 1.0× is the shared benchmark
+  // line; above it = breaching. Three lines instead of three charts, honestly
+  // comparable, with a faint trip-volume silhouette behind for context. This is the
+  // "everything together, without overloading" view.
+  function relationalChart(sorted) {
+    const W = 560, H = 300, padL = 40, padR = 16, padT = 18, padB = 28;
+    const iw = W - padL - padR, ih = H - padT - padB;
+    const n = sorted.length || 1;
+    const ratios = REL_METRICS.map((m) => { const t = m.target() || 1; return sorted.map((b) => b[m.key] / t); });
+    const allR = ratios.flat().filter((v) => isFinite(v));
+    let hi = Math.max(1.2, ...allR) * 1.12;
+    hi = Math.ceil(hi / 0.5) * 0.5;
+    const d0 = 0, d1 = hi;
+    const x = (i) => padL + (i / (n - 1)) * iw;
+    const y = (v) => padT + ih - ((Math.min(Math.max(v, d0), d1) - d0) / (d1 - d0)) * ih;
+    const oneY = y(1);
+
+    // faint trip-volume backdrop, scaled to its own range (shape only, no axis)
+    const cMax = Math.max(1, ...sorted.map((b) => b.count));
+    const vy = (c) => padT + ih - (c / cMax) * ih * 0.9;
+    let vol = `M${x(0).toFixed(1)},${(padT + ih).toFixed(1)}`;
+    sorted.forEach((b, i) => { vol += `L${x(i).toFixed(1)},${vy(b.count).toFixed(1)}`; });
+    vol += `L${x(n - 1).toFixed(1)},${(padT + ih).toFixed(1)} Z`;
+    const volPath = `<path d="${vol}" fill="var(--ink-faint)" fill-opacity="0.10" stroke="none"/>`;
+
+    // faint wash over the whole above-benchmark region
+    const wash = `<rect x="${padL}" y="${padT}" width="${iw}" height="${(oneY - padT).toFixed(1)}" fill="#d6391f" fill-opacity="0.05"/>`;
+
+    const lineOf = (arr) => { let s = false, d = ""; arr.forEach((v, i) => { if (v == null || !isFinite(v)) return; d += (s ? "L" : "M") + x(i).toFixed(1) + "," + y(v).toFixed(1); s = true; }); return d; };
+    let lines = "", dots = "", hits = "";
+    REL_METRICS.forEach((m, mi) => {
+      lines += `<path d="${lineOf(ratios[mi])}" fill="none" stroke="${m.color}" stroke-width="2.2" stroke-linejoin="round" opacity="0.95"/>`;
+      const t = m.target();
+      sorted.forEach((b, i) => {
+        const cx = x(i).toFixed(1), cy = y(ratios[mi][i]).toFixed(1);
+        dots += `<circle cx="${cx}" cy="${cy}" r="1.6" fill="${m.color}"/>`;
+        const raw = m.key === "cancel" ? Math.round(b[m.key] * 100) + "%" : (m.key === "load" ? b[m.key].toFixed(2) : b[m.key].toFixed(1));
+        const bm = m.key === "cancel" ? Math.round(t * 100) + "%" : (m.key === "load" ? t.toFixed(2) : t.toFixed(1));
+        const tip = `${b.hour}\u2002·\u2002${m.label} ${raw}\u2002·\u2002${ratios[mi][i].toFixed(2)}× of benchmark ${bm}`;
+        hits += `<circle cx="${cx}" cy="${cy}" r="9" fill="transparent" style="cursor:pointer" data-tip="${escapeHtml(tip)}" data-over="${b[m.key] > t ? 1 : 0}"/>`;
+      });
+    });
+
+    let yt = "";
+    [0, 1, d1].forEach((tk) => { if (tk > d1) return; yt += `<text x="${padL - 7}" y="${y(tk) + 3}" fill="var(--ink-faint)" font-size="10" text-anchor="end">${tk}×</text>`; });
+    let xt = "";
+    for (let i = 0; i < n; i += 4) xt += `<text x="${x(i)}" y="${H - 8}" fill="var(--ink-faint)" font-size="10" text-anchor="middle">${escapeHtml(sorted[i].hour)}</text>`;
+
+    return `<svg viewBox="0 0 ${W} ${H}" style="display:block;width:100%;height:auto" role="img" aria-label="Wait, load and cancellations as multiples of their benchmark across the day">
+      ${volPath}${wash}
+      <line x1="${padL}" y1="${oneY}" x2="${W - padR}" y2="${oneY}" stroke="#c0392b" stroke-width="1.3" stroke-dasharray="3 3"/>
+      <text x="${W - padR}" y="${(oneY - 5).toFixed(1)}" fill="#c0392b" font-size="10" text-anchor="end">benchmark · 1.0×</text>
+      ${lines}${dots}${yt}${xt}${hits}
+    </svg>`;
+  }
+
+  // The relational chart + the auto-generated plain-language read directly beneath it.
+  function relationalBlock(areaBuckets, opts) {
+    const sorted = [...areaBuckets].sort((a, b) => (a.hour < b.hour ? -1 : 1));
+    const read = (Analysis.interpretArea) ? Analysis.interpretArea(areaBuckets) : null;
+    const toneCls = read ? ({ good: "read-good", bad: "read-bad", warn: "read-warn", flat: "read-flat" }[read.tone] || "read-warn") : "";
+    const note = `<div class="section-note" style="margin:0 0 8px">Each line is that metric divided by its own target, so all three share one scale — above the dashed line is over benchmark. Three rising together usually means a real shortage; one breaking alone usually means something else (the read below sorts out which).</div>`;
+    const legend = `<div class="rel-legend">
+      <span><span class="rel-sw" style="background:#4a9eff"></span> wait</span>
+      <span><span class="rel-sw" style="background:#d9a441"></span> load</span>
+      <span><span class="rel-sw" style="background:#e06ec9"></span> cancel</span>
+      <span><span class="rel-sw bm"></span> 1.0× benchmark</span>
+      <span><span class="rel-sw vol"></span> trip volume (context)</span>
+    </div>`;
+    const readBlock = read
+      ? `<div class="read ${toneCls}"><div class="read-h">${escapeHtml(read.headline)}</div><div class="read-d">${escapeHtml(read.detail)}</div></div>`
+      : "";
+    return `<div class="day-chart">
+      ${note}
+      ${relationalChart(sorted)}
+      ${legend}
+    </div>
+    ${readBlock}`;
+  }
 
   // strip bars only (no head/recs) — used inside the area slide
   function stripBars(strip) {
@@ -880,6 +1059,14 @@
       <button class="modal-close" id="helpClose">Close</button>
       <h2>How to read this</h2>
       <div class="modal-sub">A quick guide to the labels and what each number is compared against.</div>
+
+      <h3>Reading the charts</h3>
+      <dl>
+        <dt>Wait / Load / Cancellations tabs</dt><dd>One metric across the day. Today is the solid line; the faint dashed line is a normal day (median of recent same-weekdays). Wherever today goes over its benchmark, the gap is filled red — deeper red means further over.</dd>
+        <dt>Rides / Drivers tabs</dt><dd>Volume across the day — trips and distinct drivers. These have no benchmark (more isn't good or bad on its own), so they're plain today-vs-normal curves. The tint between the lines shows whether the day ran above (blue) or below (grey) typical.</dd>
+        <dt>“The three together”</dt><dd>Wait, load, and cancellations on one shared scale, each shown as a multiple of its own target. The dashed line is 1.0× — the benchmark for all three at once. Above it = over benchmark. It's the quickest way to see whether the three move together or apart. The faint shape behind is trip volume, for context.</dd>
+        <dt>The read (the coloured box under it)</dt><dd>An automatic plain-language guess at what the three metrics are saying together, and the likeliest cause. It's a rule of thumb, not a verdict — it weighs how often each metric breaches and whether they co-occur, then names the most probable story. Always sanity-check it against the chart.</dd>
+      </dl>
 
       <h3>The three benchmarks</h3>
       <dl>
